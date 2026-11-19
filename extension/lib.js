@@ -165,6 +165,23 @@
     return pts;
   }
 
+  /**
+   * How far a fire at one spot has got, `a` steps after it caught: first a soot mark spreads (`scorch`, its radius),
+   * flames on it (`heat`, 0..1), then the paper burns through (`r`, the hole's radius, growing to `max`), and the
+   * flames die down. `start` is the share of `max` burnt at once (a grenade's blast). `done` once it's cold.
+   */
+  function burnStage(a, s) {
+    if (a < 0) return { scorch: 0, r: 0, heat: 0, done: false };
+    const ease = (t) => 1 - (1 - clamp(t, 0, 1)) ** 2;
+    const start = s.start || 0;
+    const scorch = s.max * Math.max(start * 1.8, 1.75 * ease(a / (s.scorchT + s.burnT * 0.5)));
+    const holeAt = s.scorchT * 0.8;
+    const r = a < holeAt ? s.max * start : s.max * (start + (1 - start) * ease((a - holeAt) / s.burnT));
+    const end = holeAt + s.burnT;
+    const heat = a < end ? (start ? 1 : clamp(a / 20, 0, 1)) : 1 - clamp((a - end) / s.coolT, 0, 1);
+    return { scorch, r, heat, done: a >= end + s.coolT };
+  }
+
   /** Keep at most `max` items, the newest: returns the ones to drop (the oldest first). */
   function overflow(items, max) {
     return items.length > max ? items.slice(0, items.length - max) : [];
@@ -188,6 +205,7 @@
     overflow,
     seeded,
     tornOutline,
+    burnStage,
   };
   if (typeof module === "object" && module.exports) module.exports = lib;
   else root.StickFightLib = lib;

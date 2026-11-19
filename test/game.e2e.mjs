@@ -123,10 +123,9 @@ try {
   assert.ok(afterBlast > afterShots, `the grenade loosens more (${afterShots} → ${afterBlast})`);
   const holes = await page.evaluate(() => ({
     count: Number(document.documentElement.dataset.sfHoles),
-    svgs: document.querySelectorAll(".sf-holes > svg.sf-hole").length,
-    board: !!document.querySelector(".sf-holes image")?.getAttribute("href")?.startsWith("data:image/svg+xml"),
+    canvas: getComputedStyle(document.querySelector("canvas.sf-fire")).display,
   }));
-  assert.ok(holes.count === 1 && holes.svgs === 1 && holes.board, `the grenade burns a hole: ${JSON.stringify(holes)}`);
+  assert.ok(holes.count >= 1 && holes.canvas === "block", `the grenade burns a hole: ${JSON.stringify(holes)}`);
   await page.screenshot({ path: path.join(OUT, "4-grenade.png") });
 
   // run, jump, kick
@@ -187,13 +186,19 @@ try {
   const [, yJumped] = await figure();
   assert.ok(yJumped < yDropped - 10, `W jumps up through text and lands on a line (${yDropped} → ${yJumped})`);
 
+  // the grenade's fire has spread on by now
+  const spots = Number(await page.evaluate(() => document.documentElement.dataset.sfHoles));
+  assert.ok(spots > 1, `the fire spreads (${spots} burnt spots)`);
+
   // Esc stops, the page stays wrecked; Reset puts it back
   await page.keyboard.press("Escape");
   assert.equal(await state(), "idle");
   assert.ok(await page.locator(".sf-piece").count() > 0, "pieces stay after Stop");
   await page.locator(".sf-toolbar button[data-act='reset']").click();
   assert.equal(await page.locator(".sf-piece").count(), 0, "Reset removes the pieces");
-  assert.equal(await page.locator(".sf-holes > svg, .sf-scorches > svg").count(), 0, "Reset mends the holes");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.sfHoles), "0", "Reset mends the holes");
+  assert.equal(await page.locator("canvas.sf-fire:visible").count(), 0, "Reset puts the fire out");
+  assert.equal(await page.locator(".sf-burning").count(), 0, "Reset cleans the charred words");
   assert.equal(await page.locator("span.sf-w").count(), 0, "Reset joins the words again");
   assert.equal(await page.evaluate(() => document.querySelector("#p1").textContent), p1Text);
   const back = await page.evaluate(() => document.querySelector("#mw-content-text").innerHTML);
@@ -208,6 +213,10 @@ try {
   const ours = errors.filter((e) => !/favicon/i.test(e));
   assert.deepEqual(ours, [], "no errors");
   console.log(`ok: stick fight e2e passed (screenshots in ${OUT})`);
+} catch (e) {
+  if (errors.length) console.error("page errors:", errors);
+  await context.pages().at(-1)?.screenshot({ path: path.join(OUT, "failed.png") }).catch(() => {});
+  throw e;
 } finally {
   await context.close();
   if (!arg("out")) rmSync(path.join(tmp, "profile"), { recursive: true, force: true });

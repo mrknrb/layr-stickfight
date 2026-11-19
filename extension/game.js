@@ -17,7 +17,7 @@
   "use strict";
   const L = globalThis.StickFightLib;
   const M = globalThis.Matter;
-  const Holes = globalThis.StickFightHoles; // grenade holes through the page, the circuit board behind (holes.js)
+  const Holes = globalThis.StickFightHoles; // grenade fire and holes, the circuit board behind (holes.js)
   if (!L || !M || !L.isWikipedia(location.hostname)) return;
   if (document.documentElement.dataset.stickfight) return; // injected twice
   const { Engine, Composite, Bodies, Body, Query, Sleeping } = M;
@@ -36,7 +36,7 @@
   const HIT_RADIUS = 24;
   const MELEE_RADIUS = 20;
   const BLAST_RADIUS = 120;
-  const HOLE_RADIUS = 68; // px: the hole a grenade burns through the page
+  const HOLE_RADIUS = 62; // px: the hole a grenade burns through the page (the fire spreads on from it)
   const FUSE = 80; // steps
   const MAX_PIECES = 500;
   const BAND_MARGIN = 500; // px above and below the screen with bodies
@@ -56,7 +56,8 @@
   let bandBodies = []; // the static bodies of things near the screen
   let bounds = []; // floor and walls
   let pieces = []; // {body, wrap, ox, oy, synced}
-  const hidden = []; // {el, prev}: originals hidden behind their flying copies
+  const hidden = []; // {el, prev}: originals hidden behind their flying copies, or burnt away
+  const charred = []; // elements the fire has charred (class sf-burning)
   let fig = null; // the figure's body
   const anim = { facing: 1, run: 0, flip: 0, flipDir: 1, melee: 0, meleeKind: "punch", recoil: 0, flash: 0 };
   const ctl = {
@@ -91,6 +92,13 @@
     .sf-piece { position: absolute; transform-origin: 50% 50%; will-change: transform; pointer-events: none;
       box-sizing: border-box; margin: 0; white-space: pre; overflow: visible; }
     .sf-piece > * { margin: 0 !important; box-sizing: border-box; }
+    @keyframes sf-char {
+      0% { text-shadow: 0 0 2px #ffd27a, 0 0 8px #ff5a00; }
+      55% { color: #5a2508; text-shadow: 0 0 2px #ff7a1a, 0 0 5px rgba(255,80,0,.55); }
+      100% { color: #1f0f04; text-shadow: none; } }
+    .sf-burning { animation: sf-char 3.5s ease-out forwards; }
+    img.sf-burning, svg.sf-burning, video.sf-burning, canvas.sf-burning, picture.sf-burning {
+      filter: sepia(1) saturate(1.5) brightness(.38) contrast(1.2) !important; transition: filter 2.5s; }
     .sf-canvas { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; z-index: 2147483001;
       pointer-events: none; }`;
   html.appendChild(style);
@@ -736,7 +744,7 @@
       }
     }
     if (Holes) {
-      Holes.add(x, y, HOLE_RADIUS * (0.85 + Math.random() * 0.3));
+      Holes.ignite(x, y, HOLE_RADIUS * (0.85 + Math.random() * 0.3));
       wrecked = true;
       showUi();
     }
@@ -752,6 +760,55 @@
     }
     shake = Math.max(shake, 14);
   }
+
+  // ---------- fire (holes.js tells where it scorches and where it burnt through) ----------
+  /** The things touching the circle, lines of text broken into their words first. */
+  function thingsIn(x, y, r) {
+    const out = [];
+    const n = things.length; // shatterText adds the words at the end
+    for (let i = 0; i < n; i++) {
+      const t = things[i];
+      if (t.dead || !L.rectTouchesCircle(t.rect, x, y, r)) continue;
+      if (t.kind === "text") {
+        for (const w of shatterText(t)) if (L.rectTouchesCircle(w.rect, x, y, r)) out.push(w);
+      } else out.push(t);
+    }
+    return out;
+  }
+
+  const centreIn = (t, x, y, r) => Math.hypot(t.rect.x + t.rect.w / 2 - x, t.rect.y + t.rect.h / 2 - y) < r;
+
+  /** Soot reached here: the words glow and go black, images go dark. */
+  function scorchAt(x, y, r) {
+    if (!engine) return;
+    for (const t of thingsIn(x, y, r)) {
+      if (t.charred || !centreIn(t, x, y, r)) continue;
+      t.charred = true;
+      t.el.classList.add("sf-burning");
+      charred.push(t.el);
+    }
+  }
+
+  /** The paper burnt through here: what's on it turns to ash and is gone (the figure falls through the hole). */
+  function burnAt(x, y, r) {
+    if (!engine) return;
+    let n = 0;
+    for (const t of thingsIn(x, y, r)) {
+      if (!centreIn(t, x, y, r)) continue;
+      t.dead = true;
+      dropStatic(t);
+      if (t.el.isConnected) hide(t.el);
+      Holes.ash(t.rect);
+      n++;
+    }
+    if (n) {
+      bandBodies = bandBodies.filter((b) => !b.sfThing || !b.sfThing.dead);
+      wrecked = true;
+    }
+    showUi();
+  }
+
+  if (Holes) Holes.hooks({ scorch: scorchAt, burn: burnAt });
 
   function burst(x, y, n, color, speed) {
     for (let i = 0; i < n; i++) {
@@ -1205,6 +1262,10 @@
     stop();
     for (const p of pieces) p.wrap.remove();
     if (Holes) Holes.clear();
+    for (const el of charred.splice(0)) {
+      el.classList.remove("sf-burning");
+      if (!el.classList.length) el.removeAttribute("class");
+    }
     pieces = [];
     for (const { el, prev } of hidden.splice(0)) el.style.visibility = prev;
     const parents = new Set();

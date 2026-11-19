@@ -118,3 +118,24 @@ test("torn holes", () => {
   const ang = pts.map((p) => (Math.atan2(p.y, p.x) + Math.PI * 2.05) % (Math.PI * 2));
   for (let i = 2; i < ang.length; i++) assert.ok(ang[i] > ang[i - 1] - 1e-9, `angle ${i}`);
 });
+
+test("a fire's stages", () => {
+  const s = { max: 50, scorchT: 60, burnT: 150, coolT: 120 };
+  assert.deepEqual(L.burnStage(-1, s), { scorch: 0, r: 0, heat: 0, done: false });
+  const early = L.burnStage(30, s);
+  assert.ok(early.scorch > 0 && early.r === 0 && early.heat > 0, "soot and flames before the hole");
+  let prev = { scorch: 0, r: 0 };
+  for (let a = 0; a < 400; a += 5) {
+    const st = L.burnStage(a, s);
+    assert.ok(st.scorch >= prev.scorch - 1e-9 && st.r >= prev.r - 1e-9, `grows at ${a}`);
+    assert.ok(st.r <= s.max + 1e-9 && st.scorch >= st.r, `soot ahead of the hole at ${a}`);
+    prev = st;
+  }
+  const end = L.burnStage(48 + 150 + 120, s);
+  assert.equal(end.heat, 0);
+  assert.equal(end.done, true);
+  assert.ok(Math.abs(end.r - 50) < 1e-9);
+  const blast = L.burnStage(0, { ...s, start: 0.5 });
+  assert.equal(blast.r, 25);
+  assert.equal(blast.heat, 1);
+});

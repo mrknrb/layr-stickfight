@@ -1,9 +1,11 @@
-/* Stick fight: grenade holes. A blast burns a ragged hole through the page, and behind it is the back of the monitor:
- * a circuit board (one SVG tile, repeated, lined up with the page so every hole shows the same board).
+/* Stick fight: fire and holes. A grenade sets the page on fire: a soot mark spreads first, flames dance on it, then
+ * the paper burns through, and the fire creeps on (upwards more than down) to new spots nearby until it dies down.
+ * Behind the burnt holes is the back of the monitor: a circuit board (one SVG tile, repeated, lined up with the page).
  *
- * Each hole is two SVGs in document coordinates: its scorch mark (in a layer under all the holes, so one hole's
- * soot never covers another's board) and the hole itself: the board, the page's shadow on it, the burnt rim with
- * cooling embers, torn paper flaps bent back into the hole, and hairline cracks.
+ * Everything is drawn on one canvas fixed over the screen, under the flying pieces: soot, the rims, then the board
+ * clipped to all holes together (so holes that touch become one hole with one rim), the page's shadow in it, and
+ * the flames, smoke and ash on top. The fire tells the game where it scorches and where it burnt through (hooks),
+ * so the game chars the words there and turns them to ash.
  * Loaded as a classic content script after lib.js, before game.js (globalThis.StickFightHoles).
  */
 (function () {
@@ -122,179 +124,521 @@
     return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
   }
 
-  // ---------- layers ----------
+
+  // ---------- tuning (steps are 1/60 s) ----------
+  const MAX_SITES = 120; // burning or burnt spots on the page; the oldest cold ones go first
+  const MAX_PER_FIRE = 16; // spots one grenade's fire spreads to
+  const MAX_GEN = 5; // how many hops the fire spreads
+  const MAX_PARTICLES = 1400;
+  const HOOK_EVERY = 6; // steps between telling the game where it burns
+
+  // ---------- the canvas ----------
   const style = document.createElement("style");
   style.textContent = `
-    .sf-holes, .sf-scorches { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none;
-      overflow: visible; }
-    .sf-scorches { z-index: 2147482998; }
-    .sf-holes { z-index: 2147482999; }
-    .sf-holes > svg, .sf-scorches > svg { position: absolute; overflow: visible; pointer-events: none; }
-    @keyframes sf-cool { 0% { opacity: 1; } 70% { opacity: .55; } 100% { opacity: 0; } }
-    @keyframes sf-flicker { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
-    .sf-ember { animation: sf-cool 5s ease-out forwards; }
-    .sf-ember circle { animation: sf-flicker .35s ease-in-out infinite; }`;
-  const scorchLayer = document.createElement("div");
-  scorchLayer.className = "sf-scorches";
-  const holeLayer = document.createElement("div");
-  holeLayer.className = "sf-holes";
-  let tile = null;
-  let count = 0;
-  const holes = []; // {scorch, hole}
+    .sf-fire { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; z-index: 2147482999;
+      pointer-events: none; display: none; }`;
+  const canvas = document.createElement("canvas");
+  canvas.className = "sf-fire";
+  const ctx = canvas.getContext("2d");
+  const fx = document.createElement("canvas"); // flames, smoke and sparks, over the holes
+  fx.className = "sf-fire";
+  const fctx = fx.getContext("2d");
+  const off = document.createElement("canvas"); // the page around the holes, for their inner shadow
+  const octx = off.getContext("2d");
+  const off2 = document.createElement("canvas"); // the same, blurred
+  const o2ctx = off2.getContext("2d");
 
-  function paper() {
-    for (const el of [document.body, document.documentElement]) {
-      const c = el && getComputedStyle(el).backgroundColor;
-      if (c && c !== "transparent" && !/rgba\(.*,\s*0\)$/.test(c)) return c;
-    }
-    return "#fff";
+  let board = null; // the board as a canvas pattern, once its image has loaded
+  let boardImg = null;
+  let sites = []; // {x, y, s (burnStage params), age, gen, fire, pts (torn outline, radius 1), soot, rot, st}
+  let fires = 0;
+  const fireSize = new Map(); // fire id → how many spots it has
+  let particles = []; // {kind: flame|smoke|ash|ember, x, y, vx, vy, life, max, size, ph}
+  let raf = 0;
+  let last = 0;
+  let acc = 0;
+  let steps = 0;
+  let holesAt = -99; // the step the holes were last drawn at
+  let view = ""; // scroll and size of the last drawing
+  let hooks = { scorch: null, burn: null };
+
+  function boardPattern() {
+    if (board || boardImg) return;
+    boardImg = new Image();
+    boardImg.onload = () => {
+      // drawn once into a bitmap: a pattern straight from the SVG image renders the SVG again on every fill
+      const c = document.createElement("canvas");
+      c.width = c.height = TILE;
+      c.getContext("2d").drawImage(boardImg, 0, 0, TILE, TILE);
+      board = ctx.createPattern(c, "repeat");
+      view = "";
+      wake();
+    };
+    boardImg.onerror = () => globalThis.layr?.problem?.("board-image", "the circuit board SVG didn't load");
+    boardImg.src = boardTile();
   }
 
-  const f1 = (v) => v.toFixed(1);
-  const pathOf = (pts) => "M" + pts.map((p) => `${f1(p.x)} ${f1(p.y)}`).join("L") + "Z";
-
-  function svgEl(cls, size, x, y, inner) {
-    const s = document.createElementNS(NS, "svg");
-    s.setAttribute("class", cls);
-    s.setAttribute("width", String(size));
-    s.setAttribute("height", String(size));
-    s.setAttribute("viewBox", `${-size / 2} ${-size / 2} ${size} ${size}`);
-    s.style.left = `${f1(x - size / 2)}px`;
-    s.style.top = `${f1(y - size / 2)}px`;
-    s.innerHTML = inner;
-    return s;
+  // ---------- sprites ----------
+  function sprite(size, stops) {
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    for (const [at, color] of stops) grad.addColorStop(at, color);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    return c;
   }
+  const FLAME_HOT = sprite(64, [[0, "rgba(255,236,170,.75)"], [0.3, "rgba(255,170,50,.5)"],
+    [0.65, "rgba(240,80,10,.22)"], [1, "rgba(200,40,0,0)"]]);
+  const FLAME = sprite(64, [[0, "rgba(255,150,40,.55)"], [0.45, "rgba(235,75,10,.28)"], [1, "rgba(170,25,0,0)"]]);
+  const FLAME_TIP = sprite(64, [[0, "rgba(200,50,8,.35)"], [1, "rgba(120,10,0,0)"]]);
+  const SMOKE = sprite(64, [[0, "rgba(38,34,30,.55)"], [0.6, "rgba(50,45,40,.25)"], [1, "rgba(60,55,50,0)"]]);
+  const GLOW = sprite(32, [[0, "rgba(255,220,140,1)"], [0.4, "rgba(255,120,30,.7)"], [1, "rgba(255,60,0,0)"]]);
 
-  /** Burn a hole of radius r centred on (x, y), in document coordinates. */
-  function add(x, y, r) {
-    if (!tile) tile = boardTile();
-    if (!holeLayer.isConnected) document.documentElement.append(scorchLayer, holeLayer);
-    const id = `sf-h${++count}`;
-    const rand = L.seeded((Math.random() * 2 ** 31) | 0);
-    const edge = L.tornOutline(rand, r, 44);
-    const hole = pathOf(edge);
-    const page = paper();
-
-    // the scorch: a soot blot well past the hole, blotchy, plus specks
-    const blot = pathOf(L.tornOutline(rand, r * 1.9, 22));
-    let specks = "";
-    for (let i = 0; i < 26; i++) {
+  /** A soot mark: overlapping soft blots, black in the middle, brown at the edge (a few kinds, drawn turned). */
+  function sootSprite(seed) {
+    const rand = L.seeded(seed);
+    const size = 256;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const g = c.getContext("2d");
+    const blot = (x, y, r, color) => {
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, color);
+      grad.addColorStop(1, color.replace(/[\d.]+\)$/, "0)"));
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    };
+    for (let i = 0; i < 18; i++) {
       const a = rand() * Math.PI * 2;
-      const d = r * (1.05 + rand() * 0.7);
-      specks += `<circle cx="${f1(Math.cos(a) * d)}" cy="${f1(Math.sin(a) * d)}" r="${f1(0.5 + rand() * 1.4)}"/>`;
+      const d = 30 + rand() * 60;
+      blot(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 25 + rand() * 30, "rgba(110,62,22,.22)");
     }
-    const sSize = Math.ceil(r * 5);
-    const scorch = svgEl("sf-scorch", sSize, x, y, `
-      <defs>
-        <radialGradient id="${id}-s">
-          <stop offset="0" stop-color="#0d0805" stop-opacity=".97"/>
-          <stop offset=".42" stop-color="#21130a" stop-opacity=".85"/>
-          <stop offset=".62" stop-color="#4a2a12" stop-opacity=".4"/>
-          <stop offset=".8" stop-color="#6b4019" stop-opacity="0"/>
-        </radialGradient>
-        <filter id="${id}-r" x="-30%" y="-30%" width="160%" height="160%">
-          <feTurbulence type="fractalNoise" baseFrequency=".045" numOctaves="3" seed="${count}"/>
-          <feDisplacementMap in="SourceGraphic" scale="${f1(r * 0.35)}" xChannelSelector="R" yChannelSelector="G"/>
-          <feGaussianBlur stdDeviation="1.5"/>
-        </filter>
-      </defs>
-      <path d="${blot}" fill="url(#${id}-s)" filter="url(#${id}-r)"/>
-      <g fill="#140b06" opacity=".7">${specks}</g>`);
-
-    // torn paper flaps bent back into the hole: a base on the edge, the tip towards the middle, its end charred
-    let flaps = "";
-    const nFlaps = 3 + Math.floor(rand() * 3);
-    for (let i = 0; i < nFlaps; i++) {
-      const k = Math.floor(rand() * edge.length);
-      const a = edge[k];
-      const b = edge[(k + 3) % edge.length];
-      const mx = (a.x + b.x) / 2;
-      const my = (a.y + b.y) / 2;
-      const reach = 0.35 + rand() * 0.3;
-      const tip = { x: mx * (1 - reach) + (rand() - 0.5) * r * 0.2, y: my * (1 - reach) + (rand() - 0.5) * r * 0.2 };
-      const side = { x: (a.x + tip.x) / 2 + (rand() - 0.5) * 6, y: (a.y + tip.y) / 2 + (rand() - 0.5) * 6 };
-      const pts = [a, side, tip, b];
-      flaps += `
-        <linearGradient id="${id}-f${i}" gradientUnits="userSpaceOnUse" x1="${f1(mx)}" y1="${f1(my)}" x2="${f1(tip.x)}" y2="${f1(tip.y)}">
-          <stop offset="0" stop-color="${page}"/><stop offset=".45" stop-color="#cfc6b8"/>
-          <stop offset=".8" stop-color="#5b3a1f"/><stop offset="1" stop-color="#140b05"/>
-        </linearGradient>
-        <path d="${pathOf(pts.map((p) => ({ x: p.x + 5, y: p.y + 7 })))}" fill="#000" opacity=".55" filter="url(#${id}-b)"/>
-        <path d="${pathOf(pts)}" fill="url(#${id}-f${i})" stroke="#2a1a0e" stroke-width=".6"/>`;
+    for (let i = 0; i < 22; i++) {
+      const a = rand() * Math.PI * 2;
+      const d = rand() * 62;
+      blot(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 26 + rand() * 34, "rgba(16,9,4,.38)");
     }
-
-    // cracks from the rim outwards
-    let cracks = "";
-    for (let i = 0; i < 7; i++) {
-      const p = edge[Math.floor(rand() * edge.length)];
-      const d = Math.hypot(p.x, p.y) || 1;
-      let cx = p.x;
-      let cy = p.y;
-      let dd = `M${f1(cx)} ${f1(cy)}`;
-      const len = r * (0.2 + rand() * 0.45);
-      for (let s = 0; s < 4; s++) {
-        cx += (p.x / d) * (len / 4) + (rand() - 0.5) * 8;
-        cy += (p.y / d) * (len / 4) + (rand() - 0.5) * 8;
-        dd += `L${f1(cx)} ${f1(cy)}`;
-      }
-      cracks += `<path d="${dd}"/>`;
+    blot(128, 128, 80, "rgba(8,5,2,.6)");
+    g.fillStyle = "rgba(20,12,6,.55)";
+    for (let i = 0; i < 40; i++) {
+      const a = rand() * Math.PI * 2;
+      const d = 70 + rand() * 50;
+      g.beginPath();
+      g.arc(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 0.6 + rand() * 1.6, 0, Math.PI * 2);
+      g.fill();
     }
-
-    // embers along the rim
-    let embers = "";
-    for (let i = 0; i < 14; i++) {
-      const p = edge[Math.floor(rand() * edge.length)];
-      embers += `<circle cx="${f1(p.x)}" cy="${f1(p.y)}" r="${f1(0.8 + rand() * 1.6)}" style="animation-delay:${f1(rand() * 0.3)}s"/>`;
-    }
-
-    const hSize = Math.ceil(r * 3.2);
-    const big = `M${-hSize} ${-hSize}H${hSize}V${hSize}H${-hSize}Z`;
-    const ox = ((x % TILE) + TILE) % TILE;
-    const oy = ((y % TILE) + TILE) % TILE;
-    const holeSvg = svgEl("sf-hole", hSize, x, y, `
-      <defs>
-        <pattern id="${id}-p" patternUnits="userSpaceOnUse" width="${TILE}" height="${TILE}" x="${f1(-ox)}" y="${f1(-oy)}">
-          <image href="${tile}" width="${TILE}" height="${TILE}"/>
-        </pattern>
-        <clipPath id="${id}-c"><path d="${hole}"/></clipPath>
-        <radialGradient id="${id}-d">
-          <stop offset=".45" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".55"/>
-        </radialGradient>
-        <filter id="${id}-b" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
-        <filter id="${id}-g" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.2"/></filter>
-      </defs>
-      <g clip-path="url(#${id}-c)">
-        <rect x="${-hSize}" y="${-hSize}" width="${hSize * 2}" height="${hSize * 2}" fill="url(#${id}-p)"/>
-        <circle r="${f1(r * 1.1)}" fill="url(#${id}-d)"/>
-        <path d="${big}${pathOf(edge.map((p) => ({ x: p.x - 6, y: p.y - 8 })))}" fill-rule="evenodd" fill="#000" opacity=".5" filter="url(#${id}-b)"/>
-        ${flaps}
-      </g>
-      <path d="${hole}" fill="none" stroke="#e8dccb" stroke-width="5" stroke-linejoin="round" opacity=".55"/>
-      <path d="${hole}" fill="none" stroke="#120a05" stroke-width="3.2" stroke-linejoin="round"/>
-      <g fill="none" stroke="#1a110a" stroke-width=".7" opacity=".55">${cracks}</g>
-      <g class="sf-ember">
-        <path d="${hole}" fill="none" stroke="#ff6a00" stroke-width="3" filter="url(#${id}-g)"/>
-        <path d="${hole}" fill="none" stroke="#ffb347" stroke-width=".9"/>
-        <g fill="#ffd27a">${embers}</g>
-      </g>`);
-    scorchLayer.appendChild(scorch);
-    holeLayer.appendChild(holeSvg);
-    holes.push({ scorch, hole: holeSvg });
-    for (const old of L.overflow(holes, MAX_HOLES)) {
-      old.scorch.remove();
-      old.hole.remove();
-    }
-    if (holes.length > MAX_HOLES) holes.splice(0, holes.length - MAX_HOLES);
-    return holeSvg;
+    return c;
   }
+  const SOOT = [11, 23, 37, 41].map(sootSprite);
+
+  // ---------- the fire ----------
+  function addSite(x, y, max, gen, fire, start) {
+    const rand = L.seeded((Math.random() * 2 ** 31) | 0);
+    const s = {
+      max, start,
+      scorchT: 50 + rand() * 50,
+      burnT: 150 + rand() * 140,
+      coolT: 140 + rand() * 120,
+    };
+    const site = {
+      x, y, s, age: 0, gen, fire, pts: L.tornOutline(rand, 1, 44),
+      soot: SOOT[Math.floor(rand() * SOOT.length)], rot: rand() * Math.PI * 2,
+      st: L.burnStage(0, s), spawns: [],
+    };
+    // when it spreads on: a few times while it burns, fewer the further the fire has gone
+    const n = Math.max(0, Math.round(3.6 - gen * 0.75 + (rand() - 0.5) * 1.2));
+    const from = s.scorchT * 0.5;
+    const to = s.scorchT * 0.8 + s.burnT * 0.8;
+    for (let i = 0; i < n; i++) site.spawns.push(from + rand() * (to - from));
+    site.spawns.sort((a, b) => b - a); // the next one last
+    sites.push(site);
+    fireSize.set(fire, (fireSize.get(fire) || 0) + 1);
+    if (sites.length > MAX_SITES) {
+      const i = sites.findIndex((t) => t.st.done);
+      sites.splice(i >= 0 ? i : 0, 1);
+    }
+    return site;
+  }
+
+  /** A grenade went off at (x, y): a hole of about `size` radius, burning on from there. */
+  function ignite(x, y, size) {
+    boardPattern();
+    if (!canvas.isConnected) document.documentElement.append(style, canvas, fx);
+    canvas.style.display = fx.style.display = "block";
+    const site = addSite(x, y, size, 0, ++fires, 0.55);
+    // the blast throws burning bits about
+    for (let i = 0; i < 40; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = 2 + Math.random() * 6;
+      particles.push({ kind: "ember", x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2, life: 40 + Math.random() * 50,
+        max: 90, size: 1 + Math.random() * 1.8, ph: 0 });
+    }
+    view = "";
+    wake();
+    return site;
+  }
+
+  /** The fire spreads from a burning spot to a new one nearby, upwards more often, not onto a spot already burning. */
+  function spread(site) {
+    if (site.gen >= MAX_GEN || (fireSize.get(site.fire) || 0) >= MAX_PER_FIRE) return;
+    for (let tries = 0; tries < 5; tries++) if (spreadOnce(site)) return;
+  }
+
+  function spreadOnce(site) {
+    const up = Math.random() < 0.55;
+    const a = up ? -Math.PI / 2 + (Math.random() - 0.5) * 2.2 : Math.random() * Math.PI * 2;
+    const d = site.s.max * (0.95 + Math.random() * 0.6);
+    const x = site.x + Math.cos(a) * d;
+    const y = site.y + Math.sin(a) * d;
+    const max = site.s.max * (0.72 + Math.random() * 0.32);
+    if (max < 16 || y < 0 || x < 0 || x > document.documentElement.scrollWidth) return false;
+    for (const t of sites) if (Math.hypot(t.x - x, t.y - y) < Math.max(t.s.max, max) * 0.75) return false;
+    addSite(x, y, max, site.gen + 1, site.fire, 0);
+    return true;
+  }
+
+  function rimPoint(site, k) {
+    const p = site.pts[Math.floor(Math.random() * site.pts.length)];
+    return { x: site.x + p.x * k, y: site.y + p.y * k };
+  }
+
+  /** Is the point inside a hole already (so nothing is left there to burn)? */
+  function burntAway(x, y, except) {
+    for (const t of sites) {
+      if (t !== except && t.st.r > 2 && Math.hypot(t.x - x, t.y - y) < t.st.r * 0.8) return true;
+    }
+    return false;
+  }
+
+  function emit(site, onScreen) {
+    const { r, scorch, heat } = site.st;
+    if (heat <= 0.01 || !onScreen) return;
+    const budget = 1 - particles.length / MAX_PARTICLES; // fewer, the more there are
+    // flames along the burning edge of the hole, and on the soot ahead of it
+    const n = heat * (1 + (r + scorch * 0.5) / 14) * 0.9 * Math.max(0, budget);
+    for (let i = 0; i < n || (i === 0 && Math.random() < n); i++) {
+      const front = r > 2 && Math.random() < 0.7;
+      const p = front ? rimPoint(site, r * (0.98 + Math.random() * 0.1)) : rimPoint(site, scorch * Math.random() * 0.62);
+      if (burntAway(p.x, p.y, site)) continue;
+      const big = (front ? 9 : 6) + Math.random() * (front ? 11 : 7);
+      particles.push({ kind: "flame", x: p.x, y: p.y, vx: (Math.random() - 0.5) * 0.3, vy: -1.1 - Math.random() * 1.4,
+        life: 18 + Math.random() * 26, max: 44, size: big * (0.6 + heat * 0.5), ph: Math.random() * 6.3 });
+    }
+    if (Math.random() < heat * 0.35) {
+      const p = rimPoint(site, Math.max(r, scorch * 0.4));
+      particles.push({ kind: "smoke", x: p.x, y: p.y - 10, vx: (Math.random() - 0.5) * 0.4, vy: -0.6 - Math.random() * 0.6,
+        life: 90 + Math.random() * 60, max: 150, size: 10 + Math.random() * 10, ph: Math.random() * 6.3 });
+    }
+    if (Math.random() < heat * 0.12) {
+      const p = rimPoint(site, r);
+      particles.push({ kind: "ember", x: p.x, y: p.y, vx: (Math.random() - 0.5) * 1.5, vy: -1 - Math.random() * 2,
+        life: 50 + Math.random() * 50, max: 100, size: 0.8 + Math.random() * 1.2, ph: Math.random() * 6.3 });
+    }
+  }
+
+  /** A word or an image burnt away at this rectangle: ash flakes and sparks. */
+  function ash(rect) {
+    const n = Math.min(10, 2 + Math.round(rect.w / 10));
+    for (let i = 0; i < n; i++) {
+      const x = rect.x + Math.random() * rect.w;
+      const y = rect.y + Math.random() * rect.h;
+      const glow = Math.random() < 0.35;
+      particles.push({ kind: glow ? "ember" : "ash", x, y, vx: (Math.random() - 0.5) * 1.2, vy: -0.6 - Math.random() * 1.4,
+        life: 60 + Math.random() * 70, max: 130, size: glow ? 0.8 + Math.random() : 1.2 + Math.random() * 2.2,
+        ph: Math.random() * 6.3 });
+    }
+  }
+
+  function stepFire() {
+    steps++;
+    const top = scrollY - 300;
+    const bottom = scrollY + innerHeight + 300;
+    for (const site of sites) {
+      if (site.st.done) continue;
+      site.age++;
+      site.st = L.burnStage(site.age, site.s);
+      const { r, scorch, heat } = site.st;
+      while (site.spawns.length && site.age >= site.spawns[site.spawns.length - 1]) {
+        site.spawns.pop();
+        spread(site);
+      }
+      emit(site, site.y > top && site.y < bottom);
+      if ((steps + site.gen) % HOOK_EVERY === 0 && heat > 0) {
+        if (hooks.scorch) hooks.scorch(site.x, site.y, scorch * 0.62);
+        if (hooks.burn && r > 2) hooks.burn(site.x, site.y, r * 0.92);
+      }
+    }
+    for (const p of particles) {
+      p.life--;
+      p.ph += 0.25;
+      if (p.kind === "flame") {
+        p.x += p.vx + Math.sin(p.ph) * 0.35;
+        p.y += p.vy;
+        p.vy -= 0.035;
+      } else if (p.kind === "smoke") {
+        p.x += p.vx + Math.sin(p.ph * 0.2) * 0.3;
+        p.y += p.vy;
+        p.size += 0.22;
+      } else if (p.kind === "ember") {
+        p.x += p.vx + Math.sin(p.ph) * 0.3;
+        p.y += p.vy;
+        p.vx *= 0.97;
+        p.vy = p.vy * 0.97 - 0.02;
+      } else {
+        p.x += p.vx + Math.sin(p.ph * 0.4) * 0.6;
+        p.y += p.vy;
+        p.vy = Math.min(p.vy + 0.012, 0.6);
+      }
+    }
+    particles = particles.filter((p) => p.life > 0);
+    if (particles.length > MAX_PARTICLES) particles = particles.slice(particles.length - MAX_PARTICLES);
+  }
+
+  // ---------- drawing ----------
+  function holePath(c, site, r, dx = 0, dy = 0) {
+    const pts = site.pts;
+    c.moveTo(site.x + pts[0].x * r + dx, site.y + pts[0].y * r + dy);
+    for (let i = 1; i < pts.length; i++) c.lineTo(site.x + pts[i].x * r + dx, site.y + pts[i].y * r + dy);
+    c.closePath();
+  }
+
+  /** Soot, rims, the board and its shadow: they change slowly, so drawn only every few steps or when scrolled. */
+  function drawHoles() {
+    const dpr = devicePixelRatio || 1;
+    const w = Math.round(innerWidth * dpr);
+    const h = Math.round(innerHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.setTransform(dpr, 0, 0, dpr, -scrollX * dpr, -scrollY * dpr);
+    const vx0 = scrollX - 200;
+    const vy0 = scrollY - 200;
+    const vx1 = scrollX + innerWidth + 200;
+    const vy1 = scrollY + innerHeight + 200;
+    const near = (s, r) => s.x + r > vx0 && s.x - r < vx1 && s.y + r > vy0 && s.y - r < vy1;
+    const shown = sites.filter((s) => s.st.scorch > 0 && near(s, s.st.scorch * 1.2));
+    const holes = shown.filter((s) => s.st.r > 1);
+
+    // 1. soot
+    for (const s of shown) {
+      const k = s.st.scorch * 1.25;
+      ctx.save();
+      ctx.translate(s.x, s.y);
+      ctx.rotate(s.rot);
+      ctx.globalAlpha = Math.min(1, 0.35 + s.st.scorch / s.s.max);
+      ctx.drawImage(s.soot, -k, -k, k * 2, k * 2);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    if (holes.length) {
+      // 2. the rims: a charred band, the glowing edge where it still burns (the board covers their inner half, and
+      // all of a rim that lies inside another hole: touching holes are one)
+      ctx.lineJoin = "round";
+      for (const s of holes) {
+        ctx.beginPath();
+        holePath(ctx, s, s.st.r);
+        ctx.strokeStyle = "rgba(25,13,5,.85)";
+        ctx.lineWidth = 9;
+        ctx.stroke();
+        ctx.strokeStyle = "#0e0703";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = "lighter";
+      for (const s of holes) {
+        if (s.st.heat <= 0.02) continue;
+        const h = s.st.heat;
+        ctx.beginPath();
+        holePath(ctx, s, s.st.r);
+        for (const [width, color] of [[16, `rgba(255,70,0,${0.12 * h})`], [9, `rgba(255,110,10,${0.3 * h})`],
+          [4, `rgba(255,${120 + 60 * h},30,${0.8 * h})`], [1.4, `rgba(255,230,160,${h})`]]) {
+          ctx.lineWidth = width;
+          ctx.strokeStyle = color;
+          ctx.stroke();
+        }
+      }
+      ctx.globalCompositeOperation = "source-over";
+
+      // 3. the board, through all the holes at once
+      ctx.save();
+      ctx.beginPath();
+      for (const s of holes) holePath(ctx, s, s.st.r);
+      ctx.clip();
+      // only around the holes, on the screen: filling the whole screen is slow
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const s of holes) {
+        x0 = Math.min(x0, s.x - s.st.r * 1.1);
+        y0 = Math.min(y0, s.y - s.st.r * 1.1);
+        x1 = Math.max(x1, s.x + s.st.r * 1.1);
+        y1 = Math.max(y1, s.y + s.st.r * 1.1);
+      }
+      x0 = Math.max(x0, scrollX) - 30;
+      y0 = Math.max(y0, scrollY) - 30;
+      x1 = Math.min(x1, scrollX + innerWidth) + 30;
+      y1 = Math.min(y1, scrollY + innerHeight) + 30;
+      ctx.fillStyle = board || "#0f5a32";
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.fillStyle = "rgba(0,0,0,.12)";
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      // 4. the page's shadow on the board: the page around the holes, drawn off screen, casts it
+      if (x1 > x0 && y1 > y0) {
+        // at a quarter of the size, blurred, then stretched: cheap, and a shadow is soft anyway
+        const q = 0.25;
+        const ow = Math.ceil((x1 - x0) * q) + 2;
+        const oh = Math.ceil((y1 - y0) * q) + 2;
+        for (const c of [off, off2]) {
+          if (c.width < ow || c.height < oh) {
+            c.width = Math.max(c.width, ow);
+            c.height = Math.max(c.height, oh);
+          }
+        }
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.clearRect(0, 0, off.width, off.height);
+        octx.fillStyle = "#000";
+        octx.fillRect(0, 0, ow, oh);
+        octx.globalCompositeOperation = "destination-out";
+        octx.setTransform(q, 0, 0, q, -x0 * q, -y0 * q);
+        octx.beginPath();
+        for (const s of holes) holePath(octx, s, s.st.r, 5, 8); // the page's shadow falls down and right
+        octx.fill();
+        octx.globalCompositeOperation = "source-over";
+        o2ctx.clearRect(0, 0, off2.width, off2.height);
+        o2ctx.filter = "blur(2.5px)";
+        o2ctx.drawImage(off, 0, 0);
+        o2ctx.filter = "none";
+        ctx.globalAlpha = 0.85;
+        ctx.drawImage(off2, 0, 0, ow, oh, x0, y0, ow / q, oh / q);
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+    }
+
+  }
+
+  /** Smoke, ash, flames and sparks, on their own canvas at half the resolution (they're soft anyway; a quarter of
+   * the pixels), drawn every step. */
+  function drawFx() {
+    const k = (devicePixelRatio || 1) * 0.5;
+    const w = Math.round(innerWidth * k);
+    const h = Math.round(innerHeight * k);
+    if (fx.width !== w || fx.height !== h) {
+      fx.width = w;
+      fx.height = h;
+    }
+    fctx.setTransform(1, 0, 0, 1, 0, 0);
+    fctx.clearRect(0, 0, w, h);
+    fctx.setTransform(k, 0, 0, k, -scrollX * k, -scrollY * k);
+    const vx0 = scrollX - 40;
+    const vy0 = scrollY - 40;
+    const vx1 = scrollX + innerWidth + 40;
+    const vy1 = scrollY + innerHeight + 40;
+    // 5. smoke and ash, then the flames and sparks (light adds up)
+    for (const p of particles) {
+      if (p.x < vx0 || p.x > vx1 || p.y < vy0 || p.y > vy1) continue;
+      const a = p.life / p.max;
+      if (p.kind === "smoke") {
+        fctx.globalAlpha = Math.min(1, a * 1.6) * 0.5;
+        fctx.drawImage(SMOKE, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+      } else if (p.kind === "ash") {
+        fctx.globalAlpha = Math.min(1, a * 2);
+        fctx.fillStyle = "#1c1612";
+        fctx.save();
+        fctx.translate(p.x, p.y);
+        fctx.rotate(p.ph);
+        fctx.fillRect(-p.size, -p.size * 0.4, p.size * 2, p.size * 0.8);
+        fctx.restore();
+      }
+    }
+    fctx.globalCompositeOperation = "lighter";
+    for (const p of particles) {
+      if (p.x < vx0 || p.x > vx1 || p.y < vy0 || p.y > vy1) continue;
+      const a = p.life / p.max;
+      if (p.kind === "flame") {
+        const k = p.size * (0.3 + 0.7 * Math.sqrt(a));
+        const img = a > 0.6 ? FLAME_HOT : a > 0.28 ? FLAME : FLAME_TIP;
+        fctx.globalAlpha = Math.min(1, a * 2.5);
+        fctx.drawImage(img, p.x - k * 0.4, p.y - k * 1.5, k * 0.8, k * 2.4);
+      } else if (p.kind === "ember") {
+        const k = p.size * 4 * (0.7 + 0.3 * Math.sin(p.ph * 2));
+        fctx.globalAlpha = Math.min(1, a * 1.5);
+        fctx.drawImage(GLOW, p.x - k / 2, p.y - k / 2, k, k);
+      }
+    }
+    fctx.globalCompositeOperation = "source-over";
+    fctx.globalAlpha = 1;
+  }
+
+  function active() {
+    return particles.length > 0 || sites.some((s) => !s.st.done);
+  }
+
+  function loop(now) {
+    raf = 0;
+    const dt = Math.min(100, now - (last || now));
+    last = now;
+    acc += dt;
+    let stepped = false;
+    while (acc >= 1000 / 60) {
+      acc -= 1000 / 60;
+      stepFire();
+      stepped = true;
+    }
+    const v = `${scrollX},${scrollY},${innerWidth},${innerHeight},${devicePixelRatio}`;
+    const moved = v !== view;
+    if (moved || (stepped && steps - holesAt >= 3 && sites.some((s) => !s.st.done))) {
+      holesAt = steps;
+      drawHoles();
+    }
+    if (moved || stepped) drawFx();
+    view = v;
+    if (active()) raf = requestAnimationFrame(loop);
+    else last = 0;
+  }
+
+  function wake() {
+    if (!raf && sites.length) raf = requestAnimationFrame(loop);
+  }
+  // when the fire is out, the holes still follow the page
+  addEventListener("scroll", wake, { passive: true });
+  addEventListener("resize", wake, { passive: true });
 
   function clear() {
-    for (const h of holes.splice(0)) {
-      h.scorch.remove();
-      h.hole.remove();
+    sites = [];
+    particles = [];
+    fireSize.clear();
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    last = 0;
+    acc = 0;
+    view = "";
+    holesAt = -99;
+    for (const [c, g] of [[canvas, ctx], [fx, fctx]]) {
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, c.width, c.height);
+      c.style.display = "none";
     }
   }
 
-  document.documentElement.appendChild(style);
-  globalThis.StickFightHoles = { add, clear, count: () => holes.length, layers: [style, scorchLayer, holeLayer] };
+  globalThis.StickFightHoles = {
+    ignite,
+    ash,
+    clear,
+    /** `scorch(x, y, r)`: the paper within r is scorched; `burn(x, y, r)`: it burnt through within r. */
+    hooks(h) {
+      hooks = { ...hooks, ...h };
+    },
+    count: () => sites.length,
+    burning: () => sites.filter((s) => !s.st.done && s.st.heat > 0).length,
+    canvas,
+  };
 })();
