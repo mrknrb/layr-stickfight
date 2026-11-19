@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Stick fight",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A stick figure loose on Wikipedia: everything on the page is solid, and what it shoots flies apart.",
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [
     {
       "matches": ["https://*.wikipedia.org/*", "https://wikipedia.org/*"],
-      "js": ["layr-page.js", "vendor/matter.min.js", "lib.js", "game.js"],
+      "js": ["layr-page.js", "vendor/matter.min.js", "lib.js", "holes.js", "game.js"],
       "run_at": "document_idle"
     }
   ]

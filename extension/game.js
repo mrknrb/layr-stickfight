@@ -17,6 +17,7 @@
   "use strict";
   const L = globalThis.StickFightLib;
   const M = globalThis.Matter;
+  const Holes = globalThis.StickFightHoles; // grenade holes through the page, the circuit board behind (holes.js)
   if (!L || !M || !L.isWikipedia(location.hostname)) return;
   if (document.documentElement.dataset.stickfight) return; // injected twice
   const { Engine, Composite, Bodies, Body, Query, Sleeping } = M;
@@ -35,6 +36,7 @@
   const HIT_RADIUS = 24;
   const MELEE_RADIUS = 20;
   const BLAST_RADIUS = 120;
+  const HOLE_RADIUS = 68; // px: the hole a grenade burns through the page
   const FUSE = 80; // steps
   const MAX_PIECES = 500;
   const BAND_MARGIN = 500; // px above and below the screen with bodies
@@ -147,6 +149,7 @@
     ui.hint.textContent = mode === "placing" ? HINT_PLACE : HINT_PLAY;
     html.dataset.stickfight = mode;
     html.dataset.sfPieces = String(pieces.length);
+    html.dataset.sfHoles = String(Holes ? Holes.count() : 0);
   }
 
   // ---------- collecting the page's things ----------
@@ -732,6 +735,11 @@
         startFlip(a.x);
       }
     }
+    if (Holes) {
+      Holes.add(x, y, HOLE_RADIUS * (0.85 + Math.random() * 0.3));
+      wrecked = true;
+      showUi();
+    }
     flashes.push({ x, y, t: 0 });
     burst(x, y, 26, "#444", 6);
     burst(x, y, 14, "#ff9800", 5);
@@ -1196,6 +1204,7 @@
   function reset() {
     stop();
     for (const p of pieces) p.wrap.remove();
+    if (Holes) Holes.clear();
     pieces = [];
     for (const { el, prev } of hidden.splice(0)) el.style.visibility = prev;
     const parents = new Set();

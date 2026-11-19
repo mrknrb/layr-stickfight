@@ -121,6 +121,12 @@ try {
   await page.waitForTimeout(1900);
   const afterBlast = await pieces();
   assert.ok(afterBlast > afterShots, `the grenade loosens more (${afterShots} → ${afterBlast})`);
+  const holes = await page.evaluate(() => ({
+    count: Number(document.documentElement.dataset.sfHoles),
+    svgs: document.querySelectorAll(".sf-holes > svg.sf-hole").length,
+    board: !!document.querySelector(".sf-holes image")?.getAttribute("href")?.startsWith("data:image/svg+xml"),
+  }));
+  assert.ok(holes.count === 1 && holes.svgs === 1 && holes.board, `the grenade burns a hole: ${JSON.stringify(holes)}`);
   await page.screenshot({ path: path.join(OUT, "4-grenade.png") });
 
   // run, jump, kick
@@ -187,6 +193,7 @@ try {
   assert.ok(await page.locator(".sf-piece").count() > 0, "pieces stay after Stop");
   await page.locator(".sf-toolbar button[data-act='reset']").click();
   assert.equal(await page.locator(".sf-piece").count(), 0, "Reset removes the pieces");
+  assert.equal(await page.locator(".sf-holes > svg, .sf-scorches > svg").count(), 0, "Reset mends the holes");
   assert.equal(await page.locator("span.sf-w").count(), 0, "Reset joins the words again");
   assert.equal(await page.evaluate(() => document.querySelector("#p1").textContent), p1Text);
   const back = await page.evaluate(() => document.querySelector("#mw-content-text").innerHTML);

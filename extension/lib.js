@@ -140,6 +140,31 @@
     return 1 - d / r;
   }
 
+  /** A small seeded random generator (mulberry32): the same seed gives the same numbers in [0, 1). */
+  function seeded(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /** The torn edge of a hole around (0, 0): `n` points going round, each between 0.62 r and 1.08 r from the centre,
+   * every other one pulled in a little more, and now and then a deeper tear (a ragged, notched edge). */
+  function tornOutline(rand, r, n) {
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const a = ((i + (rand() - 0.5) * 0.6) / n) * Math.PI * 2;
+      const tear = rand() < 0.12 ? 0.18 : 0;
+      const k = clamp(0.9 + (rand() - 0.5) * 0.2 - (i % 2 ? 0.09 * rand() : 0) - tear, 0.62, 1.08);
+      pts.push({ x: Math.cos(a) * r * k, y: Math.sin(a) * r * k });
+    }
+    return pts;
+  }
+
   /** Keep at most `max` items, the newest: returns the ones to drop (the oldest first). */
   function overflow(items, max) {
     return items.length > max ? items.slice(0, items.length - max) : [];
@@ -161,6 +186,8 @@
     ik,
     falloff,
     overflow,
+    seeded,
+    tornOutline,
   };
   if (typeof module === "object" && module.exports) module.exports = lib;
   else root.StickFightLib = lib;

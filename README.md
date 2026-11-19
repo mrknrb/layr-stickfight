@@ -35,6 +35,10 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
   with small images, buttons and the page's edges; text and tall images are one-way platforms its controller lands
   it on (feet that cross a top from above stand on it; running along a line, a box up to 8 px higher too), and loose
   pieces it touches get kicked away.
+- A grenade also burns a hole through the page (`extension/holes.js`): a scorch mark, a ragged burnt rim with
+  cooling embers, torn paper flaps and cracks, and behind it the back of the monitor, a circuit board drawn as one
+  SVG tile that repeats, lined up with the page so every hole shows the same board. Each hole is an SVG in two layers
+  outside `<body>` (so they never become solid things); at most 30, the oldest go; Reset mends them.
 - `extension/lib.js` holds the pure helpers (tested in Node); `background.js` only imports `layr-ext.js`, which
   passes the content script's problem reports (`layr-page.js`) on to layr.
 

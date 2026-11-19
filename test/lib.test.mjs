@@ -101,3 +101,20 @@ test("blast falloff, the piece cap", () => {
   assert.equal(L.clamp(5, 0, 3), 3);
   assert.equal(L.lerp(0, 10, 0.25), 2.5);
 });
+
+test("torn holes", () => {
+  const a = L.seeded(7);
+  const b = L.seeded(7);
+  const xs = [a(), a(), a()];
+  assert.deepEqual(xs, [b(), b(), b()]);
+  assert.ok(xs.every((x) => x >= 0 && x < 1));
+  const pts = L.tornOutline(L.seeded(3), 50, 28);
+  assert.equal(pts.length, 28);
+  for (const p of pts) {
+    const d = Math.hypot(p.x, p.y);
+    assert.ok(d >= 50 * 0.62 - 1e-9 && d <= 50 * 1.08 + 1e-9, `distance ${d}`);
+  }
+  // it goes round: the angles grow
+  const ang = pts.map((p) => (Math.atan2(p.y, p.x) + Math.PI * 2.05) % (Math.PI * 2));
+  for (let i = 2; i < ang.length; i++) assert.ok(ang[i] > ang[i - 1] - 1e-9, `angle ${i}`);
+});
