@@ -1,0 +1,8 @@
+{
+  "name": "layr-plugin-stickfight",
+  "private": true,
+  "description": "Stick fight: its tests (node --test); the extension needs no build.",
+  "scripts": {
+    "test": "node --test test/lib.test.mjs"
+  }
+}
