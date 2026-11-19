@@ -1,7 +1,7 @@
 {
   "id": "stickfight",
   "name": "Stick fight",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A stick figure loose on Wikipedia pages: everything visible is solid, and what it shoots, kicks or blows up gets physics and flies apart.",
   "author": "layr",
   "layr": "^0.1",
