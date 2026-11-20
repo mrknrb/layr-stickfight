@@ -282,6 +282,21 @@
     return site;
   }
 
+  /**
+   * A small fire that starts with a soot mark (a flamethrower"s flame on the page): no hole at once, and it spreads
+   * only a hop or two. Nothing when that spot is burning already; returns whether it caught.
+   */
+  function kindle(x, y, size) {
+    for (const t of sites) if (Math.hypot(t.x - x, t.y - y) < Math.max(t.s.max, size) * 0.7) return false;
+    boardPattern();
+    if (!canvas.isConnected) document.documentElement.append(style, canvas, fx);
+    canvas.style.display = fx.style.display = "block";
+    addSite(x, y, size, MAX_GEN - 2, ++fires, 0);
+    view = "";
+    wake();
+    return true;
+  }
+
   /** The fire spreads from a burning spot to a new one nearby, upwards more often, not onto a spot already burning. */
   function spread(site) {
     if (site.gen >= MAX_GEN || (fireSize.get(site.fire) || 0) >= MAX_PER_FIRE) return;
@@ -631,6 +646,7 @@
 
   globalThis.StickFightHoles = {
     ignite,
+    kindle,
     ash,
     clear,
     /** `scorch(x, y, r)`: the paper within r is scorched; `burn(x, y, r)`: it burnt through within r. */

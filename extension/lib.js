@@ -92,6 +92,28 @@
         return "respawn";
       case "Escape":
         return "stop";
+      case "Digit1":
+      case "Digit2":
+      case "Digit3":
+      case "Digit4":
+      case "Digit5":
+      case "Numpad1":
+      case "Numpad2":
+      case "Numpad3":
+      case "Numpad4":
+      case "Numpad5":
+        return `weapon${code.slice(-1)}`;
+      case "Equal":
+      case "NumpadAdd":
+        return "harder";
+      case "Minus":
+      case "NumpadSubtract":
+        return "easier";
+      case "Enter":
+      case "NumpadEnter":
+        return "enter";
+      case "Backspace":
+        return "backspace";
       default:
         return null;
     }
@@ -182,6 +204,54 @@
     return { scorch, r, heat, done: a >= end + s.coolT };
   }
 
+  /**
+   * Aiming without a cursor: the mouse's movement (dx, dy) pushes an aim point around the figure, kept within `r` of
+   * it; its direction is where the figure aims. Moving the mouse left a little turns the aim to the left.
+   */
+  function aimStep(off, dx, dy, r) {
+    let x = off.x + (Number(dx) || 0);
+    let y = off.y + (Number(dy) || 0);
+    const d = Math.hypot(x, y);
+    if (d > r) {
+      x = (x / d) * r;
+      y = (y / d) * r;
+    }
+    return { x, y };
+  }
+
+  /** The word list (one word a line) as a set of lower-case words, with "a" and "I", which word game lists leave out. */
+  function wordSet(text) {
+    const set = new Set(["a", "i"]);
+    for (const line of String(text).split(/\r?\n/)) {
+      const w = line.trim().toLowerCase();
+      if (/^[a-z]+$/.test(w)) set.add(w);
+    }
+    return set;
+  }
+
+  /** What the word shooter can fire: letters only, "Cat" → "cat"; null for anything else. */
+  function shootable(text) {
+    const w = String(text || "").trim().toLowerCase();
+    return /^[a-z]{1,24}$/.test(w) ? w : null;
+  }
+
+  /**
+   * The enemies at each difficulty: `max` alive at once, a new one every about `every` steps, how fast they run, the
+   * share of them with a gun, their health (a pistol shot takes 1.4) and what a punch of theirs costs the figure.
+   */
+  const LEVELS = [
+    { name: "Off", max: 0, every: 0, speed: 0, shooters: 0, hp: 0, dmg: 0 },
+    { name: "Easy", max: 2, every: 300, speed: 1.8, shooters: 0, hp: 2, dmg: 8 },
+    { name: "Normal", max: 4, every: 200, speed: 2.3, shooters: 0.15, hp: 3, dmg: 10 },
+    { name: "Hard", max: 6, every: 140, speed: 2.8, shooters: 0.3, hp: 3, dmg: 12 },
+    { name: "Brutal", max: 9, every: 90, speed: 3.2, shooters: 0.45, hp: 4, dmg: 14 },
+    { name: "Insane", max: 14, every: 50, speed: 3.7, shooters: 0.6, hp: 4.5, dmg: 16 },
+  ];
+
+  function level(n) {
+    return LEVELS[clamp(Math.round(Number(n) || 0), 0, LEVELS.length - 1)];
+  }
+
   /** Keep at most `max` items, the newest: returns the ones to drop (the oldest first). */
   function overflow(items, max) {
     return items.length > max ? items.slice(0, items.length - max) : [];
@@ -206,6 +276,11 @@
     seeded,
     tornOutline,
     burnStage,
+    aimStep,
+    wordSet,
+    shootable,
+    LEVELS,
+    level,
   };
   if (typeof module === "object" && module.exports) module.exports = lib;
   else root.StickFightLib = lib;

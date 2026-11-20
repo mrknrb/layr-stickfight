@@ -139,3 +139,43 @@ test("a fire's stages", () => {
   assert.equal(blast.r, 25);
   assert.equal(blast.heat, 1);
 });
+
+test("aiming by the mouse's movement", () => {
+  let off = { x: 120, y: 0 };
+  off = L.aimStep(off, -400, 0, 120); // a move to the left: aims left
+  assert.deepEqual(off, { x: -120, y: 0 });
+  off = L.aimStep(off, 0, 30, 120); // a little down: still left, a bit lower, never further than r
+  assert.ok(off.x < 0 && off.y > 0 && Math.hypot(off.x, off.y) <= 120 + 1e-9);
+  assert.deepEqual(L.aimStep({ x: 3, y: 4 }, undefined, NaN, 120), { x: 3, y: 4 });
+});
+
+test("the word shooter's words", () => {
+  const set = L.wordSet("aa\r\ncat\nhello\n\nDog\nnot-a-word\n");
+  for (const w of ["a", "i", "aa", "cat", "hello", "dog"]) assert.ok(set.has(w), w);
+  assert.equal(set.has("not-a-word"), false);
+  assert.equal(L.shootable(" Cat "), "cat");
+  assert.equal(L.shootable("two words"), null);
+  assert.equal(L.shootable("x1"), null);
+  assert.equal(L.shootable(""), null);
+});
+
+test("difficulty levels", () => {
+  assert.equal(L.level(0).max, 0, "Off: no enemies");
+  assert.equal(L.level(-3).name, "Off");
+  assert.equal(L.level(99).name, L.LEVELS.at(-1).name);
+  for (let i = 2; i < L.LEVELS.length; i++) {
+    const a = L.LEVELS[i - 1];
+    const b = L.LEVELS[i];
+    assert.ok(b.max > a.max && b.speed > a.speed && b.dmg > a.dmg, `${b.name} is harder than ${a.name}`);
+    assert.ok(b.every < a.every, `${b.name} sends them more often`);
+  }
+});
+
+test("weapon and word keys", () => {
+  assert.equal(L.keyAction("Digit3"), "weapon3");
+  assert.equal(L.keyAction("Numpad5"), "weapon5");
+  assert.equal(L.keyAction("Equal"), "harder");
+  assert.equal(L.keyAction("Minus"), "easier");
+  assert.equal(L.keyAction("Enter"), "enter");
+  assert.equal(L.keyAction("Digit9"), null);
+});

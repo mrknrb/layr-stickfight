@@ -8,16 +8,26 @@ A plugin that is nothing but its Chrome extension (`"extension": "extension"` in
 its web panels on Windows; it also loads in Chrome as an unpacked extension. Only on `*.wikipedia.org` for now.
 
 ## Playing
-- **▶ Stick fight** at the top of the page starts it; the figure hangs at your cursor, a click drops it there.
+- The bar is a small dot at the **bottom left**: hover it for **▶ Stick fight**, Stop, Reset, the weapons and the
+  enemies' difficulty. While playing it shows one faint line: weapon, difficulty, health, enemies down.
+- The figure hangs where the mouse is; a click drops it there. There's **no cursor** while playing: the mouse is locked
+  to the page and its movement turns the aim (move it left, it aims left; three faint dots show which way).
 - **A / D** (or ← →) run, **W / Space** (or ↑) jump, again in the air (a flip), and off walls; **S** (or ↓)
   drops through the line the figure stands on, and falls faster.
 - Text and tall images are platforms you land on from above: you run and jump through them from the side and from
   below (else the figure gets stuck under the line above). Small images and buttons are solid all round; the sides
   of tall images are walls to jump off. Loose pieces are kicked out of the way.
-- The gun follows the mouse; **click** (hold) shoots, **right click** (or **G**) throws a grenade, **F** (or **E**)
-  kicks and punches.
-- **R** puts the figure back at the cursor, **Esc** (or ■ Stop) stops: the page stays as it is. **↺ Reset** puts
-  the page back.
+- Weapons, **1–5** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight) and the
+  **word shooter**: type a word, **Enter** (or click) fires its letters one by one, only if it's a real English word
+  (they land on the page as loose letters). While it's out, letters type, so the figure moves with the arrows and
+  Space. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches.
+- Enemies: **+ / −** (or the bar) set the difficulty, Off (the start), Easy, Normal, Hard, Brutal, Insane. Above Off
+  red stick figures drop in from the top of the screen, more and faster the harder it is; they run at the figure,
+  jump and drop after it and punch, from Normal on some shoot. Bullets, letters, kicks, flames and grenades take
+  them down. The figure has 100 health; when it's gone it falls apart and comes back at the top. The difficulty is
+  kept for the next page.
+- **R** puts the figure back at the top of the screen, **Esc** (or ■ Stop) stops: the page stays as it is.
+  **↺ Reset** puts the page back.
 - While it runs, clicks don't open links: they shoot.
 
 ## How it works
@@ -44,12 +54,17 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
   The fire tells the game where it scorches (words there glow and go black, images go dark: class `sf-burning`) and
   where it burnt through (the things there are hidden, turn to ash and stop being solid). Stop leaves it burning;
   Reset puts it out and mends the page.
+- Enemies are figure bodies like the player's (they only collide with solid things; text is one-way for them the
+  same way), with a small mind each step: run at the player, jump when it is above or they are stuck, drop through
+  text when it is below, punch when close, shoot now and then. The word list (`extension/words.txt`, ENABLE, public
+  domain, 173k words) is fetched once the word shooter is picked.
 - `extension/lib.js` holds the pure helpers (tested in Node); `background.js` only imports `layr-ext.js`, which
   passes the content script's problem reports (`layr-page.js`) on to layr.
 
 ## Tests
 - `npm test`: the helpers.
 - `node test/game.e2e.mjs [--out <dir>] [--headed]`: the extension in Chromium on a fake Wikipedia page (no
-  network): start, drop, shoot, grenade, moves, running along a line of links and references both ways, S and W
+  network): the hidden bar, aiming by the mouse's movement, start, drop, shoot, grenade, moves, the weapons, the
+  word shooter (a word and a non-word), enemies dropping in and shot down, running along a line of links and references both ways, S and W
   through text, layout changes, links, Stop, Reset. Playwright from `plugins/dev` or
   `~/pwtools`.

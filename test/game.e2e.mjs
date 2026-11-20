@@ -71,8 +71,17 @@ try {
   const p1Text = await page.evaluate(() => document.querySelector("#p1").textContent);
   await page.screenshot({ path: path.join(OUT, "1-idle.png") });
 
+  // the bar is a small dot at the bottom left: its buttons show on hover
+  const bar = async (sel) => {
+    await page.hover(".sf-toolbar .tab");
+    await page.locator(`.sf-toolbar ${sel}`).click();
+  };
+  assert.equal(await page.locator(".sf-toolbar button[data-act='start']").isVisible(), false, "the bar is hidden");
+  const box = await page.locator(".sf-toolbar").boundingBox();
+  assert.ok(box.x < 40 && box.y > 700, `the bar is at the bottom left: ${JSON.stringify(box)}`);
+
   // start: the figure hangs at the cursor until a click drops it
-  await page.locator(".sf-toolbar button[data-act='start']").click();
+  await bar("button[data-act='start']");
   assert.equal(await state(), "placing");
   await page.mouse.move(300, 120);
   await page.waitForTimeout(100);
@@ -95,12 +104,35 @@ try {
   await page.waitForTimeout(1500);
   assert.equal(await builds(), buildsBefore + 1, "the things are collected again after the layout moved");
 
+  // there's no cursor: moving the mouse turns the aim. aimAt moves it toward the target (in page coordinates)
+  const figure = async () =>
+    (await page.evaluate(() => document.documentElement.dataset.sfFigure)).split(",").map(Number);
+  const aimAngle = () => page.evaluate(() => Number(document.documentElement.dataset.sfAim));
+  const aimAt = async (tx, ty) => {
+    const [fx, fy] = await figure();
+    const d = Math.hypot(tx - fx, ty - (fy - 6)) || 1;
+    const ux = (tx - fx) / d;
+    const uy = (ty - (fy - 6)) / d;
+    await page.mouse.move(600 - ux * 280, 400 - uy * 280);
+    await page.mouse.move(600 + ux * 280, 400 + uy * 280, { steps: 8 });
+    await page.waitForTimeout(120);
+    return (Math.atan2(uy, ux) * 180) / Math.PI;
+  };
+  const docPoint = (sel, fx, fy) => page.evaluate(([sel, fx, fy]) => {
+    const r = document.querySelector(sel).getBoundingClientRect();
+    return { x: r.left + scrollX + r.width * fx, y: r.top + scrollY + r.height * fy };
+  }, [sel, fx, fy]);
+  const [fx0, fy0] = await figure();
+  await aimAt(fx0 - 300, fy0 - 6); // to the left
+  assert.ok(Math.abs(Math.abs(await aimAngle()) - 180) < 8, `moving the mouse left aims left (${await aimAngle()}°)`);
+  await aimAt(fx0 + 300, fy0 - 6);
+  assert.ok(Math.abs(await aimAngle()) < 8, `and right aims right (${await aimAngle()}°)`);
+  const cursor = await page.evaluate(() => getComputedStyle(document.querySelector("#p1")).cursor);
+  assert.equal(cursor, "none", "no cursor while playing");
+
   // shoot at the first paragraph: its words come loose and their places stay empty
-  const target = await page.evaluate(() => {
-    const r = document.querySelector("#p1").getBoundingClientRect();
-    return { x: r.left + r.width * 0.6, y: r.top + 10 };
-  });
-  await page.mouse.move(target.x, target.y);
+  const target = await docPoint("#p1", 0.6, 0.1);
+  await aimAt(target.x, target.y);
   await page.mouse.down();
   await page.waitForTimeout(700);
   await page.mouse.up();
@@ -113,11 +145,10 @@ try {
   await page.screenshot({ path: path.join(OUT, "3-shot.png") });
 
   // a grenade (right click) breaks more
-  const img = await page.evaluate(() => {
-    const r = document.querySelector("#pic").getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  });
-  await page.mouse.click(img.x, img.y, { button: "right" });
+  const img = await docPoint("#pic", 0.5, 0.2);
+  await aimAt(img.x, img.y);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.up({ button: "right" });
   await page.waitForTimeout(1900);
   const afterBlast = await pieces();
   assert.ok(afterBlast > afterShots, `the grenade loosens more (${afterShots} → ${afterBlast})`);
@@ -150,16 +181,12 @@ try {
   assert.equal(page.url(), url, "links don't open while playing");
 
   // running along a line of links, bold words and [18] references: no getting stuck on its ledges
-  const figure = async () =>
-    (await page.evaluate(() => document.documentElement.dataset.sfFigure)).split(",").map(Number);
+  // (R puts the figure back at the top of the screen, in the middle: the page is scrolled so that's over #p5)
   for (const dir of ["d", "a"]) {
-    const start = await page.evaluate((dir) => {
-      const p = document.querySelector("#p5");
-      p.scrollIntoView({ block: "center" });
-      const r = p.getBoundingClientRect();
-      return { x: dir === "d" ? r.left + 20 : r.left + 560, y: r.top - 30 };
-    }, dir);
-    await page.mouse.move(start.x, start.y);
+    await page.evaluate(() => {
+      const r = document.querySelector("#p5").getBoundingClientRect();
+      scrollTo({ top: r.top + scrollY - innerHeight * 0.25 - 25, behavior: "instant" });
+    });
     await page.keyboard.press("r");
     await page.waitForTimeout(700);
     const [x0] = await figure();
@@ -190,11 +217,95 @@ try {
   const spots = Number(await page.evaluate(() => document.documentElement.dataset.sfHoles));
   assert.ok(spots > 1, `the fire spreads (${spots} burnt spots)`);
 
+  const data = (key) => page.evaluate((key) => document.documentElement.dataset[key], key);
+  const until = async (what, fn, ms) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      if (await fn()) return;
+      assert.ok(Date.now() < end, what);
+      await page.waitForTimeout(150);
+    }
+  };
+
+  // weapons: 1–5 pick them; the shotgun knocks words loose, the flamethrower sets the page alight
+  await page.evaluate(() => {
+    const r = document.querySelector("#p3").getBoundingClientRect();
+    scrollTo({ top: r.top + scrollY - innerHeight * 0.25 - 25, behavior: "instant" });
+  });
+  await page.keyboard.press("r");
+  await page.waitForTimeout(700);
+  await page.keyboard.press("3");
+  assert.equal(await data("sfWeapon"), "shotgun");
+  const beforeShotgun = await pieces();
+  const p4 = await docPoint("#p4", 0.5, 0.3);
+  await aimAt(p4.x, p4.y);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  assert.ok(await pieces() > beforeShotgun, "the shotgun knocks words loose");
+  await page.keyboard.press("4");
+  assert.equal(await data("sfWeapon"), "flamer");
+  const beforeFlames = Number(await data("sfHoles"));
+  const p3 = await docPoint("#p3", 0.3, 0.5);
+  await aimAt(p3.x, p3.y);
+  await page.mouse.down();
+  await page.waitForTimeout(1200);
+  await page.mouse.up();
+  assert.ok(Number(await data("sfHoles")) > beforeFlames, "the flamethrower sets the page alight");
+
+  // the word shooter: letters type, Enter fires a real word letter by letter, anything else is refused
+  await page.keyboard.press("5");
+  assert.equal(await data("sfWeapon"), "words");
+  await until("the word list loads", async () => Number(await data("sfDict")) > 100000, 8000);
+  const [xBefore] = await figure();
+  await page.keyboard.type("zdawq");
+  await page.keyboard.press("Enter");
+  assert.equal(await data("sfWord"), "zdawq:no", "not a word: nothing flies");
+  const [xAfter] = await figure();
+  assert.ok(Math.abs(xAfter - xBefore) < 30, "typing a, d, w... doesn't move the figure");
+  await page.waitForTimeout(900);
+  const p2 = await docPoint("#p2", 0.5, 0.5);
+  await aimAt(p2.x, p2.y);
+  await page.keyboard.type("Cat");
+  await page.keyboard.press("Enter");
+  assert.equal(await data("sfWord"), "cat:ok");
+  await until("the three letters land as loose pieces", async () =>
+    (await page.locator(".sf-piece.sf-letter").count()) === 3, 4000);
+  await page.screenshot({ path: path.join(OUT, "6-words.png") });
+  await page.keyboard.press("2");
+  assert.equal(await data("sfWeapon"), "rifle");
+
+  // enemies: none at Off; + brings them in from the top, they can be shot down; − back to Off sends them away
+  assert.equal(await data("sfEnemies"), "0", "no enemies at Off");
+  await page.keyboard.press("Equal");
+  await page.keyboard.press("Equal");
+  assert.equal(await data("sfLevel"), "2");
+  await until("enemies drop in", async () => Number(await data("sfEnemies")) >= 1, 6000);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: path.join(OUT, "7-enemies-in.png") });
+  await until("an enemy is shot down", async () => {
+    const foe = (await data("sfFoe")) || "";
+    if (foe) {
+      const [x, y] = foe.split(",").map(Number);
+      await aimAt(x, y);
+      await page.mouse.down();
+      await page.waitForTimeout(500);
+      await page.mouse.up();
+    }
+    return Number(await data("sfKills")) >= 1;
+  }, 15000);
+  await page.screenshot({ path: path.join(OUT, "8-enemy-down.png") });
+  await page.keyboard.press("Minus");
+  await page.keyboard.press("Minus");
+  assert.equal(await data("sfLevel"), "0");
+  assert.equal(await data("sfEnemies"), "0", "Off sends them away");
+  await page.keyboard.press("1");
+
   // Esc stops, the page stays wrecked; Reset puts it back
   await page.keyboard.press("Escape");
   assert.equal(await state(), "idle");
   assert.ok(await page.locator(".sf-piece").count() > 0, "pieces stay after Stop");
-  await page.locator(".sf-toolbar button[data-act='reset']").click();
+  await bar("button[data-act='reset']");
   assert.equal(await page.locator(".sf-piece").count(), 0, "Reset removes the pieces");
   assert.equal(await page.evaluate(() => document.documentElement.dataset.sfHoles), "0", "Reset mends the holes");
   assert.equal(await page.locator("canvas.sf-fire:visible").count(), 0, "Reset puts the fire out");
@@ -205,7 +316,7 @@ try {
   assert.equal(back.replace(/ style=""/g, ""), original, "Reset gives the page back as it was");
 
   // and it starts again
-  await page.locator(".sf-toolbar button[data-act='start']").click();
+  await bar("button[data-act='start']");
   await page.mouse.click(500, 150);
   assert.equal(await state(), "playing");
   await page.keyboard.press("Escape");

@@ -1,17 +1,25 @@
 /* Stick fight: a stick figure loose on a Wikipedia page. Everything visible on the page (lines of text, words, images,
  * buttons) is a solid thing it stands on and bumps into; what it shoots, kicks or blows up gets physics and flies.
+ * Enemies (red stick figures) drop in from the top of the screen when the difficulty is above Off.
  *
- * Text and tall images are one-way platforms for the figure: it lands on them from above and runs and jumps
- * through them (a solid line of text would trap it under the one above); it kicks loose pieces out of its way.
+ * Text and tall images are one-way platforms for the figures: they land on them from above and run and jump through
+ * them (a solid line of text would trap them under the one above); the player kicks loose pieces out of its way.
+ *
+ * Aiming has no cursor: the mouse's movement turns the aim (the pointer is locked to the page while playing), so
+ * moving the mouse left aims left. Weapons: pistol, machine gun, shotgun, flamethrower and the word shooter (type a
+ * word, Enter fires its letters, only real English words: words.txt, the public-domain ENABLE list, loaded when that
+ * weapon is picked). Grenades are on the right button.
  *
  * How it works: the page's things are collected as rectangles in document coordinates and become static bodies of a
  * matter.js world (only those near the screen). A hit line of text is split into one <span class="sf-w"> per word
  * (inline, so the layout doesn't move), and the words near the hit become loose pieces: each a copy of the word or
  * element in an overlay layer, moved with a CSS transform every frame, while the original is hidden and leaves its
- * hole. The figure, bullets, grenades and effects are drawn on a canvas over the page. Reset puts the page back.
+ * hole. The figures, bullets, grenades and effects are drawn on a canvas over the page. Reset puts the page back.
  *
  * The page sees what state it is in on <html data-stickfight="idle|placing|playing">, with data-sf-pieces (loose
- * pieces) and data-sf-builds (how often the things were collected); the end-to-end test reads them.
+ * pieces), data-sf-builds (how often the things were collected), data-sf-enemies, data-sf-kills, data-sf-hp,
+ * data-sf-weapon, data-sf-level, data-sf-aim (degrees) and data-sf-word ("<word>:ok|no"); the end-to-end test reads
+ * them.
  */
 (function () {
   "use strict";
@@ -20,7 +28,7 @@
   const Holes = globalThis.StickFightHoles; // grenade fire and holes, the circuit board behind (holes.js)
   if (!L || !M || !L.isWikipedia(location.hostname)) return;
   if (document.documentElement.dataset.stickfight) return; // injected twice
-  const { Engine, Composite, Bodies, Body, Query, Sleeping } = M;
+  const { Engine, Composite, Bodies, Body, Query, Sleeping, Bounds } = M;
 
   // ---------- tuning (velocities are px per 1/60 s step) ----------
   const STEP = 1000 / 60;
@@ -30,11 +38,6 @@
   const JUMP = 9.2;
   const STEP_UP = 24; // px: a ledge up to this high (a small image, a button) is walked onto
   const TALL = 70; // px: a taller image is a one-way platform like text (a wall would trap the figure)
-  const FIRE_EVERY = 7; // steps between shots while the button is held
-  const BULLET_SPEED = 38;
-  const BULLET_RANGE = 2200;
-  const HIT_RADIUS = 24;
-  const MELEE_RADIUS = 20;
   const BLAST_RADIUS = 120;
   const HOLE_RADIUS = 62; // px: the hole a grenade burns through the page (the fire spreads on from it)
   const FUSE = 80; // steps
@@ -42,11 +45,28 @@
   const BAND_MARGIN = 500; // px above and below the screen with bodies
   const LEDGE = 8; // px: running along a line, the figure steps onto a box this much higher (a [1] reference)
   const DROP = 12; // steps the figure falls through text after S
-  // text and tall images are one-way platforms for the figure (it lands on them from above, runs and jumps through
+  const MELEE_RADIUS = 20;
+  const AIM_R = 120; // px of mouse movement that turn the aim right round
+  const HP = 100;
+  const ENEMY_INK = "#b3261e";
+  // text and tall images are one-way platforms for the figures (they land on them from above, run and jump through
   // them; their sides are still walls to jump off): the physics only keeps pieces and grenades off them. Small images,
   // buttons and the page's edges are solid for everybody
-  const CAT = { figure: 0x1, solid: 0x2, piece: 0x4, nade: 0x8, text: 0x10 };
+  const CAT = { figure: 0x1, solid: 0x2, piece: 0x4, nade: 0x8, text: 0x10, enemy: 0x20 };
   const INK = "#111";
+
+  /** The player's weapons: `every` steps between shots while the button is held; bullets' speed, range, the radius
+   * of page they knock loose, damage to enemies and push. */
+  const WEAPONS = [
+    { id: "pistol", name: "Pistol", every: 7, shots: 1, spread: 0.05, speed: 38, range: 2200, radius: 24, dmg: 1.4,
+      push: 1, shake: 2 },
+    { id: "rifle", name: "Machine gun", every: 3, shots: 1, spread: 0.13, speed: 44, range: 2200, radius: 15, dmg: 0.8,
+      push: 0.7, shake: 1.5 },
+    { id: "shotgun", name: "Shotgun", every: 32, shots: 9, spread: 0.5, speed: 30, range: 650, radius: 18, dmg: 1,
+      push: 1.4, shake: 6 },
+    { id: "flamer", name: "Flamethrower", every: 2 },
+    { id: "words", name: "Word shooter", every: 0 },
+  ];
 
   // ---------- state ----------
   let mode = "idle"; // idle | placing | playing
@@ -64,7 +84,21 @@
     grounded: false, onText: false, drop: 0, coyote: 0, jumps: 1, wall: 0, fireWait: 0, nadeWait: 0, lastJump: false,
   };
   const keys = { left: false, right: false, jump: false, down: false };
-  const mouse = { x: innerWidth / 2, y: innerHeight / 3, down: false };
+  const mouse = { x: innerWidth / 2, y: innerHeight / 3, down: false, clicked: false }; // clicked: fire once, however short
+  let aimOff = { x: AIM_R, y: 0 }; // the aim point around the figure, moved by the mouse's movement
+  let weapon = 0;
+  let level = 0; // the difficulty: L.LEVELS
+  let enemies = []; // {body, hp, max, speed, shooter, cool, drop, onText, grounded, ...}
+  let enemyShots = []; // {x, y, vx, vy, left}
+  let letters = []; // the word shooter's letters in flight: {ch, x, y, vx, vy, rot, spin, left}
+  let flames = []; // the flamethrower's: {x, y, vx, vy, life, max, size, stuck}
+  let spawnWait = 0;
+  let kindleWait = 0;
+  let kills = 0;
+  const me = { hp: HP, invuln: 0, hurt: 0, dead: 0 };
+  const word = { text: "", bad: 0, queue: [], wait: 0 };
+  let dict = null; // the English words (a Set), once loaded
+  let dictLoad = null;
   let bullets = [];
   let nades = [];
   let particles = [];
@@ -75,6 +109,9 @@
   let acc = 0;
   let frame = 0;
   let wrecked = false;
+  let hadLock = false;
+  let lastWheel = 0;
+  let hudText = "";
   let anchors = []; // {el, x, y, page}: a few elements spread over the page, to see when its layout moves
 
   const pinnedMemo = new WeakMap();
@@ -85,13 +122,14 @@
   const style = document.createElement("style");
   style.textContent = `
     html[data-stickfight="playing"], html[data-stickfight="playing"] *,
-    html[data-stickfight="placing"], html[data-stickfight="placing"] * { cursor: crosshair !important; }
+    html[data-stickfight="placing"], html[data-stickfight="placing"] * { cursor: none !important; }
     html[data-stickfight="playing"] *, html[data-stickfight="placing"] * { user-select: none !important; }
     .sf-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 2147483000;
       pointer-events: none; overflow: visible; }
     .sf-piece { position: absolute; transform-origin: 50% 50%; will-change: transform; pointer-events: none;
       box-sizing: border-box; margin: 0; white-space: pre; overflow: visible; }
     .sf-piece > * { margin: 0 !important; box-sizing: border-box; }
+    .sf-letter { font: bold 24px/26px Georgia, "Times New Roman", serif; color: #111; text-align: center; }
     @keyframes sf-char {
       0% { text-shadow: 0 0 2px #ffd27a, 0 0 8px #ff5a00; }
       55% { color: #5a2508; text-shadow: 0 0 2px #ff7a1a, 0 0 5px rgba(255,80,0,.55); }
@@ -111,53 +149,172 @@
   html.appendChild(canvas);
   const ctx = canvas.getContext("2d");
 
-  // ---------- the toolbar (in a shadow root, safe from the page's styles) ----------
+  // ---------- the bar: a small dot at the bottom left, its controls show on hover (in a shadow root) ----------
   const host = document.createElement("div");
   host.className = "sf-toolbar";
-  host.style.cssText = "position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:2147483647;";
+  host.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:2147483647;";
   const shadow = host.attachShadow({ mode: "open" });
+  const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
+    <circle cx="12" cy="5" r="3" fill="#fff" stroke="none"/><path d="M12 8v7M12 15l-4 6M12 15l4 6M12 10l-5 3M12 10l6-1"/>
+    </svg>`;
   shadow.innerHTML = `
     <style>
-      .bar { display: flex; gap: 6px; align-items: center; font: 13px/1.2 system-ui, sans-serif; color: #fff;
-        background: rgba(17,17,17,.86); border-radius: 999px; padding: 4px 6px; box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+      .dock { display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 6px; cursor: default;
+        font: 12px/1.3 system-ui, sans-serif; color: #fff; }
+      .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .tab { width: 26px; height: 26px; border-radius: 50%; background: rgba(17,17,17,.6); display: grid;
+        place-items: center; opacity: .45; transition: opacity .2s; }
+      .tab svg { width: 16px; height: 16px; }
+      .hud { padding: 3px 9px; border-radius: 999px; background: rgba(17,17,17,.55); opacity: .5; white-space: nowrap;
+        transition: opacity .5s; }
+      .hud.flash, .hud.place { opacity: 1; }
+      .panel { display: none; flex-direction: column; gap: 7px; padding: 9px; border-radius: 10px; max-width: 380px;
+        background: rgba(17,17,17,.92); box-shadow: 0 2px 12px rgba(0,0,0,.35); }
+      :host(:hover) .panel { display: flex; }
+      :host(:hover) .tab, :host(:hover) .hud { opacity: 1; }
       button { font: inherit; color: #fff; background: #333; border: 1px solid #555; border-radius: 999px;
-        padding: 4px 12px; cursor: pointer; white-space: nowrap; }
+        padding: 3px 10px; cursor: pointer; white-space: nowrap; }
       button:hover { background: #444; }
-      button.go { background: #c62828; border-color: #e53935; font-weight: 600; }
-      button.go:hover { background: #d32f2f; }
-      .hint { padding: 0 6px; opacity: .85; white-space: nowrap; font-size: 12px; }
+      button.go, button.on { background: #c62828; border-color: #e53935; font-weight: 600; }
+      button.go:hover, button.on:hover { background: #d32f2f; }
+      .label { opacity: .7; min-width: 54px; }
+      .lvl { min-width: 50px; text-align: center; font-weight: 600; }
+      .hint { opacity: .8; font-size: 11px; }
       [hidden] { display: none !important; }
     </style>
-    <div class="bar">
-      <button class="go" data-act="start" title="Let a stick figure loose on this page">&#9654; Stick fight</button>
-      <button data-act="stop" hidden title="Stop (Esc): the page stays as it is">&#9632; Stop</button>
-      <button data-act="reset" hidden title="Put the page back">&#8634; Reset</button>
-      <span class="hint" hidden></span>
+    <div class="dock">
+      <div class="row"><div class="tab" title="Stick fight">${ICON}</div><div class="hud" hidden></div></div>
+      <div class="panel">
+        <div class="row">
+          <button class="go" data-act="start" title="Let a stick figure loose on this page">&#9654; Stick fight</button>
+          <button data-act="stop" hidden title="Stop (Esc): the page stays as it is">&#9632; Stop</button>
+          <button data-act="reset" hidden title="Put the page back">&#8634; Reset</button>
+        </div>
+        <div class="row"><span class="label">Weapon</span>${WEAPONS.map((w, i) =>
+          `<button data-weapon="${i}" title="Key ${i + 1}">${i + 1} ${w.name}</button>`).join("")}</div>
+        <div class="row"><span class="label">Enemies</span>
+          <button data-act="easier" title="Fewer enemies (−)">&minus;</button><span class="lvl"></span>
+          <button data-act="harder" title="More enemies (+): they drop in from the top">+</button></div>
+        <div class="hint"></div>
+      </div>
     </div>`;
   html.appendChild(host);
   const ui = {
     start: shadow.querySelector('[data-act="start"]'),
     stop: shadow.querySelector('[data-act="stop"]'),
     reset: shadow.querySelector('[data-act="reset"]'),
+    hud: shadow.querySelector(".hud"),
     hint: shadow.querySelector(".hint"),
+    lvl: shadow.querySelector(".lvl"),
+    weapons: [...shadow.querySelectorAll("[data-weapon]")],
   };
   ui.start.addEventListener("click", () => start());
   ui.stop.addEventListener("click", () => stop());
   ui.reset.addEventListener("click", () => reset());
+  shadow.querySelector('[data-act="easier"]').addEventListener("click", () => setLevel(level - 1));
+  shadow.querySelector('[data-act="harder"]').addEventListener("click", () => setLevel(level + 1));
+  for (const b of ui.weapons) b.addEventListener("click", () => selectWeapon(Number(b.dataset.weapon)));
 
   const HINT_PLACE = "Click to drop the stick figure";
-  const HINT_PLAY = "A/D run · W jump, twice, off walls · S drop · click shoot · right click grenade · " +
-    "F kick · R respawn · Esc stop";
+  const HINT_PLAY = "Move the mouse to aim (no cursor) · click fire · right click grenade · 1–5 or wheel: weapon · " +
+    "+ / − enemies · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
+  const HINT_WORDS = "Word shooter: type a word, Enter (or click) fires its letters, only real English words. " +
+    "Letters type now: move with the arrows and Space.";
+
+  function hud() {
+    const W = WEAPONS[weapon];
+    let text = "";
+    if (mode === "placing") text = HINT_PLACE;
+    else if (mode === "playing") {
+      text = `${W.name} · Enemies: ${L.level(level).name} · ♥ ${Math.ceil(me.hp)}${kills ? ` · ${kills} down` : ""}`;
+    }
+    if (text !== hudText) {
+      hudText = text;
+      ui.hud.textContent = text;
+    }
+    ui.hud.hidden = !text;
+    ui.hud.classList.toggle("place", mode === "placing");
+  }
+
+  let flashTimer = 0;
+  function hudFlash() {
+    ui.hud.classList.add("flash");
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => ui.hud.classList.remove("flash"), 1600);
+  }
 
   function showUi() {
     ui.start.hidden = mode !== "idle";
     ui.stop.hidden = mode === "idle";
     ui.reset.hidden = !wrecked && mode === "idle";
     ui.hint.hidden = mode === "idle";
-    ui.hint.textContent = mode === "placing" ? HINT_PLACE : HINT_PLAY;
+    ui.hint.textContent = mode === "placing" ? HINT_PLACE : WEAPONS[weapon].id === "words" ? HINT_WORDS : HINT_PLAY;
+    ui.lvl.textContent = L.level(level).name;
+    ui.weapons.forEach((b, i) => b.classList.toggle("on", i === weapon));
+    hud();
     html.dataset.stickfight = mode;
     html.dataset.sfPieces = String(pieces.length);
     html.dataset.sfHoles = String(Holes ? Holes.count() : 0);
+    html.dataset.sfWeapon = WEAPONS[weapon].id;
+    html.dataset.sfLevel = String(level);
+    html.dataset.sfEnemies = String(enemies.length);
+    html.dataset.sfKills = String(kills);
+    html.dataset.sfHp = String(Math.ceil(me.hp));
+  }
+
+  // the difficulty is kept between pages
+  const store = globalThis.chrome?.storage?.local;
+  try {
+    store?.get("level", (v) => {
+      if (v && Number.isFinite(v.level) && mode === "idle") {
+        level = L.LEVELS.indexOf(L.level(v.level));
+        showUi();
+      }
+    });
+  } catch {}
+
+  function setLevel(n) {
+    const next = L.LEVELS.indexOf(L.level(n));
+    if (next === level) return;
+    level = next;
+    if (level === 0) for (const e of enemies.slice()) removeEnemy(e, true);
+    spawnWait = Math.min(spawnWait, 45);
+    try {
+      store?.set({ level });
+    } catch {}
+    hudFlash();
+    showUi();
+  }
+
+  function selectWeapon(i) {
+    const n = WEAPONS.length;
+    weapon = ((i % n) + n) % n;
+    if (WEAPONS[weapon].id === "words") {
+      loadDict();
+      keys.left = keys.right = keys.jump = keys.down = false; // letters type now, a held D would run on
+    }
+    word.text = "";
+    mouse.down = mouse.clicked = false;
+    hudFlash();
+    showUi();
+  }
+
+  function loadDict() {
+    if (dict || dictLoad) return;
+    dictLoad = fetch(chrome.runtime.getURL("words.txt"))
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.text();
+      })
+      .then((text) => {
+        dict = L.wordSet(text);
+        html.dataset.sfDict = String(dict.size);
+        if (dict.size < 1000) globalThis.layr?.problem?.("word-list", `the word list has only ${dict.size} words`);
+      })
+      .catch((e) => {
+        dictLoad = null;
+        globalThis.layr?.problem?.("word-list", `the word list didn't load: ${e && e.message}`);
+      });
   }
 
   // ---------- collecting the page's things ----------
@@ -383,17 +540,10 @@
     el.style.visibility = "hidden";
   }
 
-  /** The thing comes loose: a body of its own with the given velocity, its copy flying in the overlay layer. */
-  function loosen(thing, vx, vy) {
-    if (thing.dead || !thing.el.isConnected) return null;
-    thing.dead = true;
-    dropStatic(thing);
-    const { x, y, w, h } = thing.rect;
-    const wrap = copyOf(thing);
+  /** A loose piece: `wrap` (in the overlay layer) shows it, a body of w × h centred at (cx, cy) moves it. */
+  function addPiece(wrap, cx, cy, w, h, vx, vy) {
     layer.appendChild(wrap);
-    hide(thing.el);
-    wrecked = true;
-    const body = Bodies.rectangle(x + w / 2, y + h / 2, Math.max(w, 3), Math.max(h, 3), {
+    const body = Bodies.rectangle(cx, cy, Math.max(w, 3), Math.max(h, 3), {
       density: 0.0012,
       friction: 0.5,
       restitution: 0.15,
@@ -403,7 +553,7 @@
     Composite.add(engine.world, body);
     Body.setVelocity(body, { x: vx, y: vy });
     Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.3 * (40 / Math.max(20, w)));
-    const piece = { body, wrap, ox: x + w / 2, oy: y + h / 2, synced: false };
+    const piece = { body, wrap, ox: cx, oy: cy, synced: false };
     body.sfPiece = piece;
     pieces.push(piece);
     for (const old of L.overflow(pieces, MAX_PIECES)) {
@@ -412,6 +562,18 @@
     }
     if (pieces.length > MAX_PIECES) pieces = pieces.slice(pieces.length - MAX_PIECES);
     return piece;
+  }
+
+  /** The thing comes loose: a body of its own with the given velocity, its copy flying in the overlay layer. */
+  function loosen(thing, vx, vy) {
+    if (thing.dead || !thing.el.isConnected) return null;
+    thing.dead = true;
+    dropStatic(thing);
+    const { x, y, w, h } = thing.rect;
+    const wrap = copyOf(thing);
+    hide(thing.el);
+    wrecked = true;
+    return addPiece(wrap, x + w / 2, y + h / 2, w, h, vx, vy);
   }
 
   /**
@@ -466,15 +628,29 @@
     return loose.length;
   }
 
-  // ---------- the figure ----------
+  // ---------- moving a figure (the player's and the enemies' bodies) ----------
   /** Everything a bullet stops at. */
   function solids() {
     return pieces.length ? bandBodies.concat(bounds, pieces.map((p) => p.body)) : bandBodies.concat(bounds);
   }
 
-  /** What the figure bumps into from every side: not text (see landOnText), not loose pieces (see wade). */
+  /** What the figures bump into from every side: not text (see landOnText), not loose pieces (see wade). */
   function figureSolids() {
     return bandBodies.filter((b) => !oneWay(b.sfThing) && !b.sfThing.dead).concat(bounds);
+  }
+
+  function figureBody(x, y, category) {
+    return Bodies.rectangle(x, y, FIG_W, FIG_H, {
+      inertia: Infinity,
+      friction: 0,
+      frictionStatic: 0,
+      frictionAir: 0,
+      restitution: 0,
+      density: 0.02, // heavy enough to shove piles of loose words
+      sleepThreshold: Infinity, // a sleeping body ignores the velocity the controls give it
+      chamfer: { radius: [4, 4, 6.5, 6.5] }, // round feet slide over the seams between boxes
+      collisionFilter: { category, mask: CAT.solid },
+    });
   }
 
   /** Loose pieces the figure runs or falls into are kicked out of its way (a pile of them would trap it). */
@@ -497,9 +673,9 @@
     }
   }
 
-  /** The tops of the live text boxes under the figure's feet span, for each: fn(top). */
-  function textTops(fn) {
-    const p = fig.position;
+  /** The tops of the live text boxes under a figure's feet span, for each: fn(top). */
+  function textTops(body, fn) {
+    const p = body.position;
     const left = p.x - FIG_W / 2 + 3;
     const right = p.x + FIG_W / 2 - 3;
     for (const b of bandBodies) {
@@ -512,19 +688,20 @@
 
   /**
    * One-way text: after a physics step, feet that went down past the top of a line (or, running along a line, a box
-   * at most LEDGE higher) stand on it. Jumping up or running sideways goes through text; S drops through it.
+   * at most LEDGE higher) stand on it. Jumping up or running sideways goes through text; S drops through it. `st`
+   * is the figure's {drop, onText}.
    */
-  function landOnText(prevFeet) {
-    if (!fig || ctl.drop > 0 || fig.velocity.y < 0) return;
-    const feet = fig.position.y + FIG_H / 2;
-    const from = prevFeet - (ctl.onText ? LEDGE : 0.5);
+  function landOnText(body, st, prevFeet) {
+    if (!body || st.drop > 0 || body.velocity.y < 0) return;
+    const feet = body.position.y + FIG_H / 2;
+    const from = prevFeet - (st.onText ? LEDGE : 0.5);
     let best = Infinity;
-    textTops((top) => {
+    textTops(body, (top) => {
       if (top >= from && top <= feet + 0.5 && top < best) best = top;
     });
     if (best === Infinity) return;
-    Body.setPosition(fig, { x: fig.position.x, y: best - FIG_H / 2 });
-    Body.setVelocity(fig, { x: fig.velocity.x, y: 0 });
+    Body.setPosition(body, { x: body.position.x, y: best - FIG_H / 2 });
+    Body.setVelocity(body, { x: body.velocity.x, y: 0 });
   }
 
   /** Is the figure at the side edge of a tall image (dir 1: the image's left edge is at its right)? Wall jumps. */
@@ -542,11 +719,11 @@
     return false;
   }
 
-  function standingOnText() {
-    if (ctl.drop > 0) return false;
-    const feet = fig.position.y + FIG_H / 2;
+  function standingOnText(body, st) {
+    if (st.drop > 0) return false;
+    const feet = body.position.y + FIG_H / 2;
     let on = false;
-    textTops((top) => {
+    textTops(body, (top) => {
       if (Math.abs(top - feet) <= 1.5) on = true;
     });
     return on;
@@ -571,34 +748,30 @@
   function placeFigure(x, y) {
     const cy = unstick(x, y);
     if (fig) Composite.remove(engine.world, fig);
-    fig = Bodies.rectangle(x, cy, FIG_W, FIG_H, {
-      inertia: Infinity,
-      friction: 0,
-      frictionStatic: 0,
-      frictionAir: 0,
-      restitution: 0,
-      density: 0.02, // heavy enough to shove piles of loose words
-      sleepThreshold: Infinity, // a sleeping body ignores the velocity the controls give it
-      chamfer: { radius: [4, 4, 6.5, 6.5] }, // round feet slide over the seams between boxes
-      collisionFilter: { category: CAT.figure, mask: CAT.solid },
-    });
+    fig = figureBody(x, cy, CAT.figure);
     Composite.add(engine.world, fig);
     ctl.jumps = 1;
+    me.hp = HP;
+    me.dead = 0;
+    me.invuln = 40;
+  }
+
+  /** Back at the top of the screen, in the middle (there's no cursor to put it at). */
+  function respawn() {
+    placeFigure(scrollX + innerWidth / 2, scrollY + innerHeight * 0.25);
+    showUi();
   }
 
   function aimDir() {
-    const ax = fig ? fig.position.x : mouse.x + scrollX;
-    const ay = fig ? fig.position.y - 10 : mouse.y + scrollY;
-    return L.aim(ax, ay, mouse.x + scrollX, mouse.y + scrollY);
+    return L.aim(0, 0, aimOff.x, aimOff.y);
   }
 
-  function control() {
+  function control(list) {
     const p = fig.position;
-    const list = figureSolids();
     const feet = p.y + FIG_H / 2;
     const rising = fig.velocity.y < -0.5;
     const onSolid = !rising && touching(p.x - FIG_W / 2 + 2, feet - 1, p.x + FIG_W / 2 - 2, feet + 3, list);
-    const onText = !rising && standingOnText();
+    const onText = !rising && standingOnText(fig, ctl);
     if (keys.down && onText && !onSolid) ctl.drop = DROP; // down through the line
     ctl.onText = onText && ctl.drop === 0;
     const grounded = onSolid || ctl.onText;
@@ -614,7 +787,7 @@
     let vx = fig.velocity.x;
     let vy = fig.velocity.y;
     const want = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-    if (want && (grounded || ctl.coyote > 0)) stepUp(want, list);
+    if (want && (grounded || ctl.coyote > 0)) stepUp(fig, want, list);
     if (grounded) vx = L.lerp(vx, want * RUN, 0.35);
     else if (want) vx = L.lerp(vx, want * RUN, 0.1);
 
@@ -651,15 +824,15 @@
    * A line of text is many boxes whose tops differ by a few pixels (links, bold words, [1] references), and loose words
    * lie around: a ledge in front of the feet that is low enough lifts the figure onto it instead of stopping it.
    */
-  function stepUp(dir, list) {
-    const p = fig.position;
+  function stepUp(body, dir, list) {
+    const p = body.position;
     const feet = p.y + FIG_H / 2;
     const x0 = dir > 0 ? p.x + FIG_W / 2 - 1 : p.x - FIG_W / 2 - 4;
     if (!touching(x0, feet - STEP_UP, x0 + 5, feet - 1.5, list)) return;
     const x = p.x + dir * 4;
     for (let dy = 1; dy <= STEP_UP + 1; dy += 1) {
       if (!touching(x - FIG_W / 2, p.y - FIG_H / 2 - dy, x + FIG_W / 2, feet - dy - 0.5, list)) {
-        Body.setPosition(fig, { x: p.x + dir * 1, y: p.y - dy });
+        Body.setPosition(body, { x: p.x + dir * 1, y: p.y - dy });
         return;
       }
     }
@@ -685,18 +858,155 @@
     return L.clamp(fig ? fig.velocity.x * 0.7 : 0, -4, 4);
   }
 
-  function fire() {
+  // ---------- weapons ----------
+  function fire(W) {
     const m = muzzle();
-    const spread = (Math.random() - 0.5) * 0.05;
-    const ang = m.a.angle + spread;
-    bullets.push({ x: m.x, y: m.y, vx: Math.cos(ang), vy: Math.sin(ang), left: BULLET_RANGE, trail: [] });
+    for (let i = 0; i < W.shots; i++) {
+      const ang = m.a.angle + (Math.random() - 0.5) * W.spread;
+      const speed = W.speed * (W.shots > 1 ? 0.8 + Math.random() * 0.4 : 1);
+      bullets.push({
+        x: m.x, y: m.y, vx: Math.cos(ang), vy: Math.sin(ang), left: W.range * (W.shots > 1 ? 0.7 + Math.random() * 0.3 : 1),
+        trail: [], speed, radius: W.radius, dmg: W.dmg, push: W.push, shake: W.shake,
+      });
+    }
     anim.recoil = 1;
     anim.flash = 3;
+    if (W.id === "shotgun") {
+      Body.setVelocity(fig, { x: fig.velocity.x - m.a.x * 2.5, y: fig.velocity.y - m.a.y * 1.5 });
+      shake = Math.max(shake, 3);
+    }
     // a spent case flies out
     particles.push({
       kind: "shell", x: m.x - m.a.x * 14, y: m.y - m.a.y * 14, vx: -anim.facing * (1 + Math.random()),
-      vy: -2.5 - Math.random(), life: 50, max: 50, size: 2.5, color: "#b8860b", spin: Math.random() * 6,
+      vy: -2.5 - Math.random(), life: 50, max: 50, size: W.id === "shotgun" ? 3.5 : 2.5,
+      color: W.id === "shotgun" ? "#c62828" : "#b8860b", spin: Math.random() * 6,
     });
+  }
+
+  /** The flamethrower: a stream of fire that sets what it touches alight and burns enemies. */
+  function flame() {
+    const m = muzzle();
+    for (let i = 0; i < 3; i++) {
+      const ang = m.a.angle + (Math.random() - 0.5) * 0.22;
+      const v = 7 + Math.random() * 2.5;
+      flames.push({
+        x: m.x + m.a.x * 4, y: m.y + m.a.y * 4, vx: Math.cos(ang) * v + fig.velocity.x * 0.5,
+        vy: Math.sin(ang) * v + fig.velocity.y * 0.3, life: 26 + Math.random() * 8, max: 34, size: 3, stuck: false,
+      });
+    }
+    if (flames.length > 400) flames = flames.slice(flames.length - 400);
+  }
+
+  function stepFlames() {
+    if (!flames.length) return;
+    for (const f of flames) {
+      f.x += f.vx;
+      f.y += f.vy;
+      f.vx *= 0.95;
+      f.vy = f.vy * 0.95 - 0.06;
+      f.size += 0.75;
+      f.life--;
+      if (f.stuck) continue;
+      const e = enemyAt(f.x, f.y, f.size * 0.4);
+      if (e) {
+        e.burn = 90;
+        hurtEnemy(e, 0.05, { x: f.vx * 0.04, y: 0 });
+      }
+      const hit = Query.point(bandBodies, { x: f.x, y: f.y }).find((h) => h.sfThing && !h.sfThing.dead);
+      if (!hit) continue;
+      f.stuck = true;
+      f.vx *= 0.15;
+      f.vy *= 0.15;
+      if (Holes && kindleWait <= 0 && Math.random() < 0.2 && Holes.kindle(f.x, f.y, 24 + Math.random() * 16)) {
+        kindleWait = 16;
+        wrecked = true;
+        showUi();
+      }
+    }
+    flames = flames.filter((f) => f.life > 0);
+  }
+
+  /** Enter (or a click) with the word shooter: a real English word flies off letter by letter. */
+  function fireWord() {
+    const w = L.shootable(word.text);
+    if (!w || word.bad || word.queue.length) return;
+    if (!dict) {
+      loadDict();
+      return;
+    }
+    if (!dict.has(w)) {
+      word.bad = 45; // shown red and shaking, then gone
+      html.dataset.sfWord = `${w}:no`;
+      return;
+    }
+    html.dataset.sfWord = `${w}:ok`;
+    word.queue = w.toUpperCase().split("");
+    word.text = "";
+    word.wait = 0;
+  }
+
+  function stepWord() {
+    if (word.bad > 0 && --word.bad === 0) word.text = "";
+    if (!word.queue.length || !fig || --word.wait > 0) return;
+    const m = muzzle();
+    const ang = m.a.angle + (Math.random() - 0.5) * 0.04;
+    letters.push({
+      ch: word.queue.shift(), x: m.x, y: m.y, vx: Math.cos(ang) * 17, vy: Math.sin(ang) * 17, rot: 0,
+      spin: (Math.random() - 0.5) * 0.3, left: 1500,
+    });
+    word.wait = 5;
+    anim.recoil = 1;
+  }
+
+  function stepLetters() {
+    if (!letters.length) return;
+    const list = solids();
+    for (const l of letters) {
+      l.vy += 0.12;
+      l.rot += l.spin;
+      for (let s = 0; s < 3 && l.left > 0; s++) {
+        l.x += l.vx / 3;
+        l.y += l.vy / 3;
+        const e = enemyAt(l.x, l.y, 8);
+        if (e) {
+          hurtEnemy(e, 3, { x: l.vx * 0.5, y: l.vy * 0.5 - 2 });
+          land(l);
+          break;
+        }
+        const hit = Query.point(list, { x: l.x, y: l.y }).find((h) => !(h.sfThing && h.sfThing.dead));
+        if (!hit) continue;
+        const d = Math.hypot(l.vx, l.vy) || 1;
+        if (hit.sfThing) hitAt(l.x, l.y, 30, { x: (l.vx / d) * 1.2, y: (l.vy / d) * 1.2 }, 0);
+        else if (hit.sfPiece) {
+          Sleeping.set(hit, false);
+          Body.setVelocity(hit, { x: hit.velocity.x + l.vx * 0.5, y: hit.velocity.y + l.vy * 0.5 - 1 });
+        }
+        burst(l.x, l.y, 5, "#555", 3);
+        shake = Math.max(shake, 3);
+        land(l);
+        break;
+      }
+      l.left -= 17;
+      if (l.left <= 0 && !l.landed) land(l);
+    }
+    letters = letters.filter((l) => !l.landed);
+  }
+
+  /** A letter that hit something drops onto the page as a loose piece. */
+  function land(l) {
+    l.landed = true;
+    l.left = 0;
+    const wrap = document.createElement("div");
+    wrap.className = "sf-piece sf-letter";
+    wrap.textContent = l.ch;
+    const w = 18;
+    const h = 26;
+    wrap.style.left = `${l.x - w / 2}px`;
+    wrap.style.top = `${l.y - h / 2}px`;
+    wrap.style.width = `${w}px`;
+    wrap.style.height = `${h}px`;
+    addPiece(wrap, l.x - (l.vx / 17) * 6, l.y - (l.vy / 17) * 6, w, h, -l.vx * 0.15, -2 - Math.random() * 2);
+    wrecked = true;
   }
 
   function throwNade() {
@@ -726,7 +1036,9 @@
     const hx = p.x + dir.x * reach;
     const hy = p.y + (anim.meleeKind === "kick" ? 6 : -6) + dir.y * reach;
     const n = hitAt(hx, hy, MELEE_RADIUS, { x: dir.x * 1.3, y: dir.y * 1.3 - 0.3 }, 0);
-    if (n) {
+    const e = enemyAt(hx, hy, MELEE_RADIUS * 0.6);
+    if (e) hurtEnemy(e, 1.5, { x: dir.x * 9, y: -4 });
+    if (n || e) {
       shake = Math.max(shake, 4);
       burst(hx, hy, 6, "#666", 3);
     }
@@ -742,6 +1054,13 @@
         Body.setVelocity(fig, { x: fig.velocity.x + a.x * 12 * f, y: fig.velocity.y + a.y * 12 * f - 4 * f });
         startFlip(a.x);
       }
+    }
+    for (const e of enemies.slice()) {
+      const d = Math.hypot(e.body.position.x - x, e.body.position.y - y);
+      const f = L.falloff(d, BLAST_RADIUS * 1.3);
+      if (f <= 0) continue;
+      const a = L.aim(x, y, e.body.position.x, e.body.position.y);
+      hurtEnemy(e, 1 + 9 * f, { x: a.x * 14 * f, y: a.y * 14 * f - 5 * f });
     }
     if (Holes) {
       Holes.ignite(x, y, HOLE_RADIUS * (0.85 + Math.random() * 0.3));
@@ -759,6 +1078,194 @@
       });
     }
     shake = Math.max(shake, 14);
+  }
+
+  // ---------- enemies ----------
+  /** A new enemy drops in from above the screen, not right on top of the player. */
+  function spawnEnemy() {
+    const lv = L.level(level);
+    let x = 0;
+    for (let i = 0; i < 8; i++) {
+      x = scrollX + 50 + Math.random() * Math.max(10, innerWidth - 100);
+      if (!fig || Math.abs(x - fig.position.x) > 160) break;
+    }
+    const body = figureBody(x, scrollY - 40 - Math.random() * 60, CAT.enemy);
+    Composite.add(engine.world, body);
+    Body.setVelocity(body, { x: 0, y: 2 });
+    enemies.push({
+      body, hp: lv.hp, max: lv.hp, speed: lv.speed * (0.85 + Math.random() * 0.3), shooter: Math.random() < lv.shooters,
+      cool: 60, drop: 0, onText: false, grounded: false, jumpWait: 0, stuck: 0, facing: 1, run: 0, melee: 0, hurt: 0,
+      flip: 0, burn: 0, recoil: 0, flash: 0, prevFeet: 0, wander: Math.random() < 0.5 ? -1 : 1,
+    });
+  }
+
+  function enemyAt(x, y, pad) {
+    for (const e of enemies) {
+      const b = e.body.bounds;
+      if (x >= b.min.x - pad && x <= b.max.x + pad && y >= b.min.y - pad && y <= b.max.y + pad) return e;
+    }
+    return null;
+  }
+
+  function hurtEnemy(e, dmg, push) {
+    if (!enemies.includes(e)) return;
+    e.hp -= dmg;
+    e.hurt = 8;
+    if (push) Body.setVelocity(e.body, { x: e.body.velocity.x + push.x, y: e.body.velocity.y + push.y });
+    if (e.hp <= 0) {
+      kills++;
+      removeEnemy(e, true);
+      shake = Math.max(shake, 3);
+      showUi();
+    }
+  }
+
+  /** Gone from the world: in pieces (`smash`) or quietly (fell off the page). */
+  function removeEnemy(e, smash) {
+    Composite.remove(engine.world, e.body);
+    enemies = enemies.filter((x) => x !== e);
+    if (smash) ragdoll(e.body.position, e.body.velocity, ENEMY_INK);
+  }
+
+  /** The figure falls apart: its bones and head tumble away. */
+  function ragdoll(p, v, color) {
+    const parts = [[0, -8, 0, 4], [0, 4, -5, 20], [0, 4, 5, 20], [0, -6, -10, 2], [0, -6, 10, 2]];
+    for (const [x0, y0, x1, y1] of parts) {
+      particles.push({
+        kind: "bone", x: p.x + (x0 + x1) / 2, y: p.y + (y0 + y1) / 2, len: Math.hypot(x1 - x0, y1 - y0),
+        ang: Math.atan2(y1 - y0, x1 - x0), spin: (Math.random() - 0.5) * 0.5,
+        vx: v.x * 0.5 + (Math.random() - 0.5) * 7, vy: v.y * 0.5 - 3 - Math.random() * 4, life: 110, max: 110,
+        size: 3, color,
+      });
+    }
+    particles.push({
+      kind: "head", x: p.x, y: p.y - 14, vx: v.x * 0.5 + (Math.random() - 0.5) * 5, vy: -5 - Math.random() * 3,
+      life: 110, max: 110, size: 5.5, color, spin: 0,
+    });
+    burst(p.x, p.y, 10, color, 4);
+  }
+
+  function hurtPlayer(dmg, dir) {
+    if (!fig || me.invuln > 0) return;
+    me.hp = Math.max(0, me.hp - dmg);
+    me.invuln = 22;
+    me.hurt = 14;
+    shake = Math.max(shake, 5);
+    Body.setVelocity(fig, { x: fig.velocity.x + dir * 5, y: fig.velocity.y - 3 });
+    burst(fig.position.x, fig.position.y - 6, 6, "#c62828", 3);
+    if (me.hp <= 0) {
+      ragdoll(fig.position, fig.velocity, INK);
+      Composite.remove(engine.world, fig);
+      fig = null;
+      me.dead = 110; // steps before it's back
+      shake = Math.max(shake, 10);
+    }
+    showUi();
+  }
+
+  /** An enemy's mind: run at the player, jump up to it, drop down to it, punch it; some shoot. */
+  function enemyThink(e, list, lv) {
+    const b = e.body;
+    const p = b.position;
+    const v = b.velocity;
+    const feet = p.y + FIG_H / 2;
+    const rising = v.y < -0.5;
+    const onSolid = !rising && touching(p.x - FIG_W / 2 + 2, feet - 1, p.x + FIG_W / 2 - 2, feet + 3, list);
+    const onText = !rising && standingOnText(b, e);
+    e.onText = onText && e.drop === 0;
+    const grounded = onSolid || e.onText;
+    e.grounded = grounded;
+    if (e.drop > 0) e.drop--;
+    if (e.jumpWait > 0) e.jumpWait--;
+    if (e.cool > 0) e.cool--;
+    let want = 0;
+    let vx = v.x;
+    let vy = v.y;
+    if (fig) {
+      const t = fig.position;
+      const dx = t.x - p.x;
+      const dy = t.y - p.y;
+      e.facing = dx >= 0 ? 1 : -1;
+      if (Math.abs(dx) > 18) want = e.facing;
+      if (e.shooter && Math.abs(dx) < 200 && Math.abs(dy) < 60) want = 0; // close enough to shoot
+      if (grounded && e.jumpWait <= 0) {
+        if ((dy < -40 && Math.abs(dx) < 260 && Math.random() < 0.05) || e.stuck > 20) {
+          vy = -JUMP * (0.9 + Math.random() * 0.15);
+          e.jumpWait = 45;
+          e.stuck = 0;
+          if (Math.random() < 0.3) e.flip = 1;
+        } else if (dy > 60 && e.onText && Math.random() < 0.04) {
+          e.drop = DROP;
+          e.jumpWait = 20;
+        }
+      }
+      if (Math.abs(dx) < 24 && Math.abs(dy) < 34 && e.cool <= 0) {
+        e.melee = 1;
+        e.cool = 55;
+        hurtPlayer(lv.dmg, e.facing);
+      } else if (e.shooter && e.cool <= 0 && Math.hypot(dx, dy) < 700 && Math.random() < 0.03) {
+        const s = { x: p.x, y: p.y - 6 };
+        const a = L.aim(s.x, s.y, t.x, t.y - 6);
+        const ang = a.angle + (Math.random() - 0.5) * 0.12;
+        enemyShots.push({ x: s.x + a.x * 20, y: s.y + a.y * 20, vx: Math.cos(ang) * 9, vy: Math.sin(ang) * 9, left: 900 });
+        e.cool = 80 + Math.random() * 60;
+        e.recoil = 1;
+        e.flash = 3;
+      }
+    } else {
+      want = e.wander;
+      if (Math.random() < 0.01) e.wander = -e.wander;
+    }
+    if (grounded) vx = L.lerp(vx, want * e.speed, 0.3);
+    else if (want) vx = L.lerp(vx, want * e.speed, 0.08);
+    if (want && grounded) stepUp(b, want, list);
+    if (want && grounded && Math.abs(v.x) < 0.4) e.stuck++;
+    else e.stuck = Math.max(0, e.stuck - 1);
+    Body.setVelocity(b, { x: vx, y: Math.min(vy, 22) });
+    if (grounded) e.run += Math.abs(vx) * 0.075;
+    if (e.melee > 0) e.melee = Math.max(0, e.melee - 1 / 14);
+    if (e.flip > 0) e.flip = Math.max(0, e.flip - 1 / 26);
+    if (e.hurt > 0) e.hurt--;
+    if (e.flash > 0) e.flash--;
+    e.recoil *= 0.75;
+    if (e.burn > 0) {
+      e.burn--;
+      if (e.burn % 8 === 0) hurtEnemy(e, 0.12, null);
+    }
+  }
+
+  function stepEnemies(list) {
+    const lv = L.level(level);
+    if (lv.max > 0 && enemies.length < lv.max && (fig || me.dead)) {
+      if (--spawnWait <= 0) {
+        spawnEnemy();
+        spawnWait = lv.every * (0.6 + Math.random() * 0.8);
+      }
+    }
+    for (const e of enemies.slice()) {
+      e.prevFeet = e.body.position.y + FIG_H / 2;
+      enemyThink(e, list, lv);
+    }
+  }
+
+  function stepEnemyShots() {
+    if (!enemyShots.length) return;
+    const list = figureSolids();
+    for (const s of enemyShots) {
+      for (let k = 0; k < 3 && s.left > 0; k++) {
+        s.x += s.vx / 3;
+        s.y += s.vy / 3;
+        s.left -= 3;
+        if (fig && Bounds.contains(fig.bounds, { x: s.x, y: s.y })) {
+          hurtPlayer(L.level(level).dmg * 0.8, Math.sign(s.vx) || 1);
+          s.left = 0;
+        } else if (Query.point(list, { x: s.x, y: s.y }).length) {
+          burst(s.x, s.y, 3, "#a00", 2);
+          s.left = 0;
+        }
+      }
+    }
+    enemyShots = enemyShots.filter((s) => s.left > 0);
   }
 
   // ---------- fire (holes.js tells where it scorches and where it burnt through) ----------
@@ -826,12 +1333,16 @@
     frame++;
     if (frame % 60 === 0 && layoutMoved()) rebuild();
     else if (frame % 10 === 0) updateBand();
+    const list = figureSolids();
+    const W = WEAPONS[weapon];
     if (fig) {
-      control();
+      control(list);
       wade();
-      if (mouse.down && ctl.fireWait <= 0) {
-        fire();
-        ctl.fireWait = FIRE_EVERY;
+      if ((mouse.down || mouse.clicked) && ctl.fireWait <= 0 && W.every) {
+        if (W.id === "flamer") flame();
+        else fire(W);
+        ctl.fireWait = W.every;
+        mouse.clicked = false;
       }
       if (anim.melee > 0) {
         anim.melee -= 1 / 14;
@@ -841,13 +1352,20 @@
         }
       }
     }
+    stepWord();
+    stepEnemies(list);
     if (ctl.fireWait > 0) ctl.fireWait--;
     if (ctl.nadeWait > 0) ctl.nadeWait--;
+    if (kindleWait > 0) kindleWait--;
     const prevFeet = fig ? fig.position.y + FIG_H / 2 : 0;
     if (ctl.drop > 0) ctl.drop--;
     Engine.update(engine, STEP);
-    landOnText(prevFeet);
+    landOnText(fig, ctl, prevFeet);
+    for (const e of enemies) landOnText(e.body, e, e.prevFeet);
     stepBullets();
+    stepEnemyShots();
+    stepLetters();
+    stepFlames();
     for (const n of nades) {
       if (--n.fuse <= 0) {
         Composite.remove(engine.world, n.body);
@@ -863,13 +1381,21 @@
         p.vx *= 0.97;
         p.vy *= 0.97;
       } else p.vy += 0.3;
+      if (p.kind === "bone") p.ang += p.spin;
       p.life--;
     }
     particles = particles.filter((p) => p.life > 0);
     for (const f of flashes) f.t++;
     flashes = flashes.filter((f) => f.t < 18);
-    // fallen out of the page's bottom: gone
-    if (fig && fig.position.y > html.scrollHeight + 400) placeFigure(mouse.x + scrollX, mouse.y + scrollY);
+    // fallen out of the page's bottom: back at the top. Enemies far off the screen are gone
+    if (fig && fig.position.y > html.scrollHeight + 400) respawn();
+    for (const e of enemies.slice()) {
+      const y = e.body.position.y;
+      if (y > html.scrollHeight + 400 || y < scrollY - 2500 || y > scrollY + innerHeight + 2500) removeEnemy(e, false);
+    }
+    if (!fig && me.dead > 0 && --me.dead === 0) respawn();
+    if (me.invuln > 0) me.invuln--;
+    if (me.hurt > 0) me.hurt--;
     if (anim.flip > 0) anim.flip = Math.max(0, anim.flip - 1 / 26);
     if (fig && ctl.grounded) anim.run += Math.abs(fig.velocity.x) * 0.075;
     anim.recoil *= 0.75;
@@ -882,22 +1408,29 @@
     for (const b of bullets) {
       b.trail.push({ x: b.x, y: b.y });
       if (b.trail.length > 3) b.trail.shift();
-      for (let s = 0; s < BULLET_SPEED && b.left > 0; s += 6) {
+      for (let s = 0; s < b.speed && b.left > 0; s += 6) {
         b.x += b.vx * 6;
         b.y += b.vy * 6;
         b.left -= 6;
+        const e = enemyAt(b.x, b.y, 3);
+        if (e) {
+          b.left = 0;
+          burst(b.x, b.y, 4, ENEMY_INK, 3);
+          hurtEnemy(e, b.dmg, { x: b.vx * 2.5 * b.push, y: b.vy * 2.5 * b.push - 1 });
+          break;
+        }
         const hit = Query.point(list, { x: b.x, y: b.y }).find((h) => !(h.sfThing && h.sfThing.dead));
         if (!hit) continue;
         b.left = 0;
         burst(b.x, b.y, 5, "#555", 3);
         burst(b.x, b.y, 3, "#ffc107", 4);
-        if (hit.sfThing) hitAt(b.x, b.y, HIT_RADIUS, { x: b.vx, y: b.vy }, 0);
+        if (hit.sfThing) hitAt(b.x, b.y, b.radius, { x: b.vx * b.push, y: b.vy * b.push }, 0);
         else if (hit.sfPiece) {
           Sleeping.set(hit, false);
-          Body.setVelocity(hit, { x: hit.velocity.x + b.vx * 6, y: hit.velocity.y + b.vy * 6 - 1 });
+          Body.setVelocity(hit, { x: hit.velocity.x + b.vx * 6 * b.push, y: hit.velocity.y + b.vy * 6 * b.push - 1 });
           Body.setAngularVelocity(hit, hit.angularVelocity + (Math.random() - 0.5) * 0.4);
         }
-        shake = Math.max(shake, 2);
+        shake = Math.max(shake, b.shake);
       }
     }
     bullets = bullets.filter((b) => b.left > 0);
@@ -931,35 +1464,56 @@
     ctx.lineTo(x1, y1);
   }
 
-  /** The stick figure's bones for this frame (document coordinates), from its body and what it's doing. */
-  function pose(cx, cy, falling) {
-    const f = anim.facing;
-    const lx = lean();
+  /** How the player looks this frame (see pose). */
+  function playerLook(falling) {
+    return {
+      facing: anim.facing, lean: lean(), air: falling || !ctl.grounded, wall: falling ? 0 : ctl.wall,
+      vx: fig ? fig.velocity.x : 0, vy: fig ? fig.velocity.y : 0, run: anim.run, melee: anim.melee,
+      meleeKind: anim.meleeKind, aim: aimDir(), recoil: anim.recoil, flip: anim.flip, flipDir: anim.flipDir,
+      weapon: WEAPONS[weapon].id, flash: anim.flash, armsUp: false,
+    };
+  }
+
+  function enemyLook(e) {
+    const v = e.body.velocity;
+    const p = e.body.position;
+    const aim = e.shooter && fig ? L.aim(p.x, p.y - 6, fig.position.x, fig.position.y - 6) : { x: e.facing, y: 0.2,
+      angle: e.facing > 0 ? 0.2 : Math.PI - 0.2 };
+    return {
+      facing: e.facing, lean: L.clamp(v.x * 0.7, -4, 4), air: !e.grounded, wall: 0, vx: v.x, vy: v.y, run: e.run,
+      melee: e.melee, meleeKind: "punch", aim, recoil: e.recoil, flip: e.flip, flipDir: e.facing,
+      weapon: e.shooter ? "pistol" : "fists", flash: e.flash, armsUp: !e.grounded && v.y > 3,
+    };
+  }
+
+  /** A stick figure's bones for this frame (document coordinates), from its body and what it's doing. */
+  function pose(cx, cy, o) {
+    const f = o.facing;
+    const lx = o.lean;
     const head = { x: cx + lx, y: cy - 14 };
     const neck = { x: cx + lx * 0.8, y: cy - 8 };
     const hip = { x: cx, y: cy + 4 };
     const feetY = cy + FIG_H / 2;
     let footA;
     let footB;
-    const air = falling || !ctl.grounded;
-    if (anim.melee > 0 && anim.meleeKind === "kick") {
-      const t = Math.sin((1 - anim.melee) * Math.PI);
-      const a = aimDir();
+    const a = o.aim;
+    if (o.melee > 0 && o.meleeKind === "kick") {
+      const t = Math.sin((1 - o.melee) * Math.PI);
       const dy = Math.abs(a.y) < 0.5 ? a.y * 0.5 : a.y;
       footA = { x: hip.x + f * 17 * t + f * 2, y: hip.y + 15 * (1 - t) + dy * 14 * t };
-      footB = { x: hip.x - f * 4, y: air ? hip.y + 12 : feetY };
-    } else if (air) {
-      const tuck = fig && fig.velocity.y < 0 ? 5 : 1;
-      if (ctl.wall && !falling) {
-        footA = { x: hip.x + ctl.wall * 7, y: hip.y + 9 };
-        footB = { x: hip.x + ctl.wall * 5, y: hip.y + 15 };
+      footB = { x: hip.x - f * 4, y: o.air ? hip.y + 12 : feetY };
+    } else if (o.air) {
+      const tuck = o.vy < 0 ? 5 : 1;
+      if (o.wall) {
+        footA = { x: hip.x + o.wall * 7, y: hip.y + 9 };
+        footB = { x: hip.x + o.wall * 5, y: hip.y + 15 };
       } else {
         footA = { x: hip.x + f * 6, y: hip.y + 15 - tuck };
         footB = { x: hip.x - f * 4, y: hip.y + 16 - tuck * 0.5 };
       }
-    } else if (fig && Math.abs(fig.velocity.x) > 0.4) {
-      const dir = Math.sign(fig.velocity.x);
-      const p = anim.run;
+    } else if (Math.abs(o.vx) > 0.4) {
+      const dir = Math.sign(o.vx);
+      const p = o.run;
       footA = { x: hip.x + Math.sin(p) * 8 * dir, y: feetY - Math.max(0, Math.cos(p)) * 6 };
       footB = { x: hip.x + Math.sin(p + Math.PI) * 8 * dir, y: feetY - Math.max(0, Math.cos(p + Math.PI)) * 6 };
     } else {
@@ -970,26 +1524,85 @@
     const kneeB = L.ik(hip.x, hip.y, footB.x, footB.y, 8.5, 8.5, -f);
 
     const sh = { x: neck.x, y: neck.y + 2 };
-    const a = aimDir();
-    const back = anim.recoil * 4;
+    const back = o.recoil * 4;
     let gun = { x: sh.x + a.x * (14 - back), y: sh.y + a.y * (14 - back) };
     let off = { x: sh.x + a.x * 10 - a.y * 2 * f, y: sh.y + a.y * 10 + a.x * 2 * f };
-    if (anim.melee > 0 && anim.meleeKind === "punch") {
-      const t = Math.sin((1 - anim.melee) * Math.PI);
+    if (o.melee > 0 && o.meleeKind === "punch") {
+      const t = Math.sin((1 - o.melee) * Math.PI);
       off = { x: sh.x + f * (6 + 9 * t), y: sh.y + a.y * 6 * t };
       gun = { x: sh.x - f * 4 + a.x * 6, y: sh.y + 6 };
+    } else if (o.armsUp) {
+      gun = { x: sh.x - 6, y: sh.y - 13 };
+      off = { x: sh.x + 6, y: sh.y - 13 };
+    } else if (o.weapon === "fists") {
+      gun = { x: sh.x + f * 8, y: sh.y + 2 };
+      off = { x: sh.x + f * 12, y: sh.y - 3 };
     }
     const elbowG = L.ik(sh.x, sh.y, gun.x, gun.y, 7.5, 7.5, a.x >= 0 ? 1 : -1);
     const elbowO = L.ik(sh.x, sh.y, off.x, off.y, 7.5, 7.5, a.x >= 0 ? 1 : -1);
     return { head, neck, hip, kneeA, kneeB, sh, elbowG, elbowO, a };
   }
 
-  function drawFigure(cx, cy, falling) {
-    const b = pose(cx, cy, falling);
+  /** What the figure holds, drawn along the aim at its hand (the barrel's end at x = its length). */
+  function drawItem(id, flash) {
+    let len = 10;
+    if (id === "pistol") {
+      ctx.fillRect(-1, -3.5, 11, 3.5);
+      ctx.fillRect(-1, -1, 3, 5);
+    } else if (id === "rifle") {
+      ctx.fillRect(-7, -3.5, 25, 3.5);
+      ctx.fillRect(-1, -1, 3, 5);
+      ctx.fillRect(7, -1, 3, 6);
+      len = 18;
+    } else if (id === "shotgun") {
+      ctx.fillRect(-6, -4, 22, 4.5);
+      ctx.fillRect(-1, 0, 3, 4);
+      ctx.fillStyle = "#6d4c41";
+      ctx.fillRect(8, 0.5, 6, 2.5);
+      len = 16;
+    } else if (id === "flamer") {
+      ctx.fillRect(-1, -3, 17, 3);
+      ctx.fillStyle = "#b71c1c";
+      ctx.fillRect(-7, -1, 7, 8);
+      if (Math.random() < 0.8) {
+        ctx.fillStyle = "#ff9800";
+        ctx.beginPath();
+        ctx.arc(17.5, -1.5, 1.5 + Math.random(), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      return;
+    } else if (id === "words") {
+      ctx.fillStyle = "#1565c0";
+      ctx.beginPath();
+      ctx.moveTo(-1, -2.5);
+      ctx.lineTo(7, -2.5);
+      ctx.lineTo(15, -7);
+      ctx.lineTo(15, 4);
+      ctx.lineTo(7, 0.5);
+      ctx.lineTo(-1, 0.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillRect(1, 0, 2.5, 4);
+      return;
+    } else return;
+    if (flash > 0) {
+      ctx.fillStyle = "#ffb300";
+      ctx.beginPath();
+      ctx.moveTo(len, -1.75);
+      ctx.lineTo(len + 9 + Math.random() * 4, -6);
+      ctx.lineTo(len + 7, -1.75);
+      ctx.lineTo(len + 9 + Math.random() * 4, 3);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawFigure(cx, cy, o, ink) {
+    const b = pose(cx, cy, o);
     ctx.save();
-    if (anim.flip > 0) {
+    if (o.flip > 0) {
       ctx.translate(cx, cy);
-      ctx.rotate(anim.flipDir * (1 - anim.flip) * Math.PI * 2);
+      ctx.rotate(o.flipDir * (1 - o.flip) * Math.PI * 2);
       ctx.translate(-cx, -cy);
     }
     const bones = () => {
@@ -1015,35 +1628,75 @@
     ctx.arc(b.head.x, b.head.y, 7.5, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(255,255,255,.7)";
     ctx.fill();
-    ctx.strokeStyle = INK;
+    ctx.strokeStyle = ink;
     ctx.lineWidth = 3;
     bones();
     ctx.beginPath();
     ctx.arc(b.head.x, b.head.y, 5.5, 0, Math.PI * 2);
-    ctx.fillStyle = INK;
+    ctx.fillStyle = ink;
     ctx.fill();
-    // the pistol in the gun hand
-    const g = b.elbowG;
-    ctx.save();
-    ctx.translate(g.fx, g.fy);
-    ctx.rotate(b.a.angle);
-    if (b.a.x < 0) ctx.scale(1, -1);
-    ctx.fillStyle = INK;
-    ctx.fillRect(-1, -3.5, 11, 3.5);
-    ctx.fillRect(-1, -1, 3, 5);
-    if (anim.flash > 0) {
-      ctx.fillStyle = "#ffb300";
-      ctx.beginPath();
-      ctx.moveTo(10, -1.75);
-      ctx.lineTo(19 + Math.random() * 4, -6);
-      ctx.lineTo(17, -1.75);
-      ctx.lineTo(19 + Math.random() * 4, 3);
-      ctx.closePath();
-      ctx.fill();
+    if (!o.armsUp) {
+      const g = b.elbowG;
+      ctx.save();
+      ctx.translate(g.fx, g.fy);
+      ctx.rotate(b.a.angle);
+      if (b.a.x < 0) ctx.scale(1, -1);
+      ctx.fillStyle = INK;
+      drawItem(o.weapon, o.flash);
+      ctx.restore();
     }
     ctx.restore();
-    ctx.restore();
   }
+
+  function drawBar(x, y, w, share, color) {
+    ctx.fillStyle = "rgba(0,0,0,.45)";
+    ctx.fillRect(x - w / 2 - 1, y - 1, w + 2, 5);
+    ctx.fillStyle = color;
+    ctx.fillRect(x - w / 2, y, w * L.clamp(share, 0, 1), 3);
+  }
+
+  /** The word being typed, over the figure's head (red and shaking when it isn't a word). */
+  function drawWord(x, y) {
+    let text = word.text;
+    let faint = false;
+    if (!dict) {
+      text = dictLoad ? "loading words…" : "no word list";
+      faint = true;
+    } else if (!text && !word.queue.length) {
+      text = "type a word";
+      faint = true;
+    } else if (!text) return;
+    ctx.font = faint ? "12px system-ui, sans-serif" : "bold 16px Consolas, ui-monospace, monospace";
+    const caret = !faint && !word.bad && frame % 60 < 30 ? "_" : "";
+    const w = ctx.measureText(text + "_").width + 12;
+    const dx = word.bad ? Math.sin(word.bad * 1.7) * 4 : 0;
+    ctx.globalAlpha = faint ? 0.6 : 0.92;
+    ctx.fillStyle = word.bad ? "#ffebee" : "#fff";
+    ctx.strokeStyle = word.bad ? "#c62828" : "#1565c0";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(x - w / 2 + dx, y - 11, w, 22, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = word.bad ? "#c62828" : faint ? "#555" : "#111";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text + caret, x - w / 2 + 6 + dx, y + 1);
+  }
+
+  const FLAME_GLOW = (() => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 32;
+    const g = c.getContext("2d");
+    const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+    grad.addColorStop(0, "rgba(255,240,180,1)");
+    grad.addColorStop(0.35, "rgba(255,150,40,.8)");
+    grad.addColorStop(1, "rgba(220,40,0,0)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 32, 32);
+    return c;
+  })();
 
   function draw() {
     const dpr = resizeCanvas();
@@ -1059,6 +1712,19 @@
       ctx.globalAlpha = p.kind === "smoke" ? a * 0.35 : Math.min(1, a * 1.5);
       ctx.fillStyle = p.color;
       if (p.kind === "smoke") {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === "bone") {
+        const c = Math.cos(p.ang) * p.len * 0.5;
+        const s = Math.sin(p.ang) * p.len * 0.5;
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = p.size;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        line(p.x - c, p.y - s, p.x + c, p.y + s);
+        ctx.stroke();
+      } else if (p.kind === "head") {
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
         ctx.fill();
@@ -1083,6 +1749,12 @@
       line(t.x, t.y, b.x, b.y);
       ctx.stroke();
     }
+    ctx.fillStyle = "#e53935";
+    for (const s of enemyShots) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
     for (const n of nades) {
       const p = n.body.position;
       ctx.fillStyle = "#33691e";
@@ -1096,26 +1768,71 @@
         ctx.fill();
       }
     }
-    const mx = mouse.x + scrollX;
-    const my = mouse.y + scrollY;
+    // the word shooter's letters in flight
+    if (letters.length) {
+      ctx.font = 'bold 24px Georgia, "Times New Roman", serif';
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255,255,255,.8)";
+      ctx.fillStyle = "#111";
+      for (const l of letters) {
+        ctx.save();
+        ctx.translate(l.x, l.y);
+        ctx.rotate(l.rot);
+        ctx.strokeText(l.ch, 0, 0);
+        ctx.fillText(l.ch, 0, 0);
+        ctx.restore();
+      }
+    }
+    for (const e of enemies) {
+      const p = e.body.position;
+      drawFigure(p.x, p.y, enemyLook(e), e.hurt > 0 && e.hurt % 4 < 2 ? "#ff8a80" : ENEMY_INK);
+      if (e.burn > 0) {
+        ctx.globalCompositeOperation = "lighter";
+        for (let i = 0; i < 3; i++) {
+          const s = 10 + Math.random() * 10;
+          ctx.drawImage(FLAME_GLOW, p.x - s / 2 + (Math.random() - 0.5) * 10, p.y - s / 2 - Math.random() * 20, s, s);
+        }
+        ctx.globalCompositeOperation = "source-over";
+      }
+      if (e.hp < e.max) drawBar(p.x, p.y - 32, 22, e.hp / e.max, "#e53935");
+    }
+    if (flames.length) {
+      ctx.globalCompositeOperation = "lighter";
+      for (const f of flames) {
+        const t = f.life / f.max;
+        ctx.globalAlpha = Math.min(1, t * 1.6) * 0.8;
+        const s = f.size * 2;
+        ctx.drawImage(FLAME_GLOW, f.x - s / 2, f.y - s / 2, s, s);
+      }
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+    }
     if (mode === "placing") {
       ctx.globalAlpha = 0.65;
       anim.facing = 1;
-      drawFigure(mx, my, true);
+      drawFigure(mouse.x + scrollX, mouse.y + scrollY, playerLook(true), INK);
       ctx.globalAlpha = 1;
     } else if (fig) {
-      anim.facing = aimDir().x >= 0 ? 1 : -1;
-      drawFigure(fig.position.x, fig.position.y, false);
-      // the crosshair
-      ctx.strokeStyle = "rgba(200,0,0,.85)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(mx, my, 7, 0, Math.PI * 2);
-      line(mx - 11, my, mx - 4, my);
-      line(mx + 4, my, mx + 11, my);
-      line(mx, my - 11, mx, my - 4);
-      line(mx, my + 4, mx, my + 11);
-      ctx.stroke();
+      const a = aimDir();
+      anim.facing = a.x >= 0 ? 1 : -1;
+      const p = fig.position;
+      if (!(me.invuln > 0 && me.hurt > 0 && frame % 4 < 2)) drawFigure(p.x, p.y, playerLook(false), INK);
+      // no cursor: three faint dots show which way it aims
+      const s = shoulder();
+      ctx.fillStyle = "rgba(200,0,0,.45)";
+      for (const d of [40, 52, 64]) {
+        ctx.beginPath();
+        ctx.arc(s.x + a.x * d, s.y + a.y * d, d === 64 ? 2.2 : 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      let top = p.y - 34;
+      if (me.hp < HP) {
+        drawBar(p.x, top, 26, me.hp / HP, me.hp > 35 ? "#43a047" : "#e53935");
+        top -= 8;
+      }
+      if (WEAPONS[weapon].id === "words") drawWord(p.x, top - 12);
     }
   }
 
@@ -1134,7 +1851,17 @@
       if (n === 4) acc = 0;
       syncPieces();
       html.dataset.sfPieces = String(pieces.length);
-      if (fig && frame % 6 === 0) html.dataset.sfFigure = `${Math.round(fig.position.x)},${Math.round(fig.position.y)}`;
+      if (frame % 6 === 0) {
+        if (fig) html.dataset.sfFigure = `${Math.round(fig.position.x)},${Math.round(fig.position.y)}`;
+        html.dataset.sfAim = String(Math.round((aimDir().angle * 180) / Math.PI));
+        html.dataset.sfEnemies = String(enemies.length);
+        html.dataset.sfKills = String(kills);
+        html.dataset.sfHp = String(Math.ceil(me.hp));
+        const foe = fig && enemies.length ? enemies.reduce((m, e) =>
+          Math.abs(e.body.position.x - fig.position.x) < Math.abs(m.body.position.x - fig.position.x) ? e : m) : null;
+        html.dataset.sfFoe = foe ? `${Math.round(foe.body.position.x)},${Math.round(foe.body.position.y)}` : "";
+        hud();
+      }
     }
     draw();
   }
@@ -1152,9 +1879,30 @@
     e.stopImmediatePropagation();
   }
 
+  /** The mouse locked to the page while playing: no cursor, and it can't wander off the panel. */
+  function lockMouse() {
+    if (document.pointerLockElement === html || typeof html.requestPointerLock !== "function") return;
+    try {
+      const p = html.requestPointerLock();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch {}
+  }
+
+  function onLockChange() {
+    const now = document.pointerLockElement === html;
+    const lost = hadLock && !now;
+    hadLock = now;
+    html.dataset.sfLocked = String(now);
+    if (lost && mode === "playing") stop(); // Esc (the browser takes it back first) or another window
+  }
+  document.addEventListener("pointerlockchange", onLockChange);
+
   function onMove(e) {
-    mouse.x = e.clientX;
-    mouse.y = e.clientY;
+    if (!document.pointerLockElement) {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    }
+    if (mode === "playing") aimOff = L.aimStep(aimOff, e.movementX, e.movementY, AIM_R);
   }
 
   function onDown(e) {
@@ -1163,12 +1911,17 @@
     onMove(e);
     if (mode === "placing" && e.button === 0) {
       placeFigure(mouse.x + scrollX, mouse.y + scrollY);
+      aimOff = { x: AIM_R, y: 0 };
       mode = "playing";
       acc = 0;
+      lockMouse();
       showUi();
     } else if (mode === "playing") {
-      if (e.button === 0) mouse.down = true;
-      else if (e.button === 2 && ctl.nadeWait <= 0 && fig) {
+      lockMouse();
+      if (e.button === 0) {
+        if (WEAPONS[weapon].id === "words") fireWord();
+        else mouse.down = mouse.clicked = true;
+      } else if (e.button === 2 && ctl.nadeWait <= 0 && fig) {
         throwNade();
         ctl.nadeWait = 30;
       }
@@ -1180,28 +1933,55 @@
     swallow(e);
   }
 
+  function onWheel(e) {
+    if (mode !== "playing" || fromToolbar(e)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const now = performance.now();
+    if (now - lastWheel < 140 || !e.deltaY) return;
+    lastWheel = now;
+    selectWeapon(weapon + Math.sign(e.deltaY));
+  }
+
   function onKey(e, down) {
-    if (typing(e)) return;
+    if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
     const act = L.keyAction(e.code);
-    if (!act || e.ctrlKey || e.metaKey || e.altKey) return;
+    // the word shooter: letters type the word (movement is on the arrows and Space then)
+    if (mode === "playing" && WEAPONS[weapon].id === "words" && /^[a-zA-Z]$/.test(e.key)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!down && act in keys) keys[act] = false;
+      if (down && !word.bad && word.text.length < 24) word.text += e.key.toLowerCase();
+      return;
+    }
+    if (!act) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     if (act in keys) keys[act] = down;
-    if (!down || e.repeat) return;
+    if (!down) return;
+    if (act === "backspace") {
+      if (!word.bad) word.text = word.text.slice(0, -1);
+      return;
+    }
+    if (e.repeat) return;
     if (act === "stop") stop();
     else if (mode !== "playing") return;
     else if (act === "melee" && fig) melee();
     else if (act === "grenade" && fig && ctl.nadeWait <= 0) {
       throwNade();
       ctl.nadeWait = 30;
-    } else if (act === "respawn") placeFigure(mouse.x + scrollX, mouse.y + scrollY);
+    } else if (act === "respawn") respawn();
+    else if (act.startsWith("weapon")) selectWeapon(Number(act.slice(6)) - 1);
+    else if (act === "harder") setLevel(level + 1);
+    else if (act === "easier") setLevel(level - 1);
+    else if (act === "enter") fireWord();
   }
 
   const onKeyDown = (e) => onKey(e, true);
   const onKeyUp = (e) => onKey(e, false);
   const onBlur = () => {
     keys.left = keys.right = keys.jump = keys.down = false;
-    mouse.down = false;
+    mouse.down = mouse.clicked = false;
   };
   let resizeTimer = 0;
   const onResize = () => {
@@ -1218,6 +1998,7 @@
     ["contextmenu", swallow],
     ["dragstart", swallow],
     ["selectstart", swallow],
+    ["wheel", onWheel],
     ["keydown", onKeyDown],
     ["keyup", onKeyUp],
     ["blur", onBlur],
@@ -1233,10 +2014,14 @@
     }
     rebuild();
     mode = "placing";
+    kills = 0;
+    me.hp = HP;
+    spawnWait = 90;
     canvas.style.display = "block";
-    for (const [type, fn] of LISTENERS) addEventListener(type, fn, true);
+    for (const [type, fn] of LISTENERS) addEventListener(type, fn, { capture: true, passive: false });
     last = 0;
     if (!raf) raf = requestAnimationFrame(loop);
+    if (WEAPONS[weapon].id === "words") loadDict();
     showUi();
   }
 
@@ -1244,16 +2029,27 @@
     if (mode === "idle") return;
     mode = "idle";
     for (const [type, fn] of LISTENERS) removeEventListener(type, fn, true);
+    hadLock = false;
+    if (document.pointerLockElement === html) document.exitPointerLock();
     onBlur();
     cancelAnimationFrame(raf);
     raf = 0;
     if (fig) Composite.remove(engine.world, fig);
     fig = null;
     for (const n of nades) Composite.remove(engine.world, n.body);
+    for (const e of enemies) Composite.remove(engine.world, e.body);
+    enemies = [];
+    enemyShots = [];
+    letters = [];
+    flames = [];
     nades = [];
     bullets = [];
     particles = [];
     flashes = [];
+    word.text = "";
+    word.queue = [];
+    word.bad = 0;
+    me.dead = 0;
     canvas.style.display = "none";
     showUi();
   }
@@ -1279,6 +2075,7 @@
     bounds = [];
     engine = null;
     wrecked = false;
+    kills = 0;
     showUi();
   }
 
