@@ -66,7 +66,7 @@
       push: 1.4, shake: 6 },
     { id: "flamer", name: "Flamethrower", every: 2 },
     { id: "words", name: "Word shooter", every: 0 },
-    { id: "hands", name: "Punch", every: 13 }, // bare hands: friendly until it punches
+    { id: "hands", name: "Punch", every: 13 }, // bare hands: hanging relaxed until it punches
   ];
 
   // ---------- state ----------
@@ -1511,8 +1511,6 @@
       vx: fig ? fig.velocity.x : 0, vy: fig ? fig.velocity.y : 0, run: anim.run, melee: anim.melee,
       meleeKind: anim.meleeKind, aim: aimDir(), recoil: anim.recoil, flip: anim.flip, flipDir: anim.flipDir,
       weapon: WEAPONS[weapon].id, flash: anim.flash, armsUp: false, wave: anim.wave, jabArm: anim.jabArm,
-      // a smile while waving, and in punch mode while it isn't punching
-      friendly: anim.wave > 0 || (WEAPONS[weapon].id === "hands" && !(anim.melee > 0)),
     };
   }
 
@@ -1695,21 +1693,6 @@
     ctx.arc(b.head.x, b.head.y, 5.5, 0, Math.PI * 2);
     ctx.fillStyle = ink;
     ctx.fill();
-    if (o.friendly) {
-      // two eyes and a smile, looking the way it faces
-      const hx = b.head.x + b.f * 1.2;
-      const hy = b.head.y;
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.arc(hx - 1.9, hy - 1.6, 0.95, 0, Math.PI * 2);
-      ctx.arc(hx + 1.9, hy - 1.6, 0.95, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.1;
-      ctx.beginPath();
-      ctx.arc(hx, hy + 0.2, 2.6, Math.PI * 0.18, Math.PI * 0.82);
-      ctx.stroke();
-    }
     if (o.melee > 0 && o.meleeKind === "jab") {
       const h = o.jabArm ? b.elbowG : b.elbowO;
       ctx.fillStyle = ink;
@@ -1906,14 +1889,7 @@
       anim.facing = a.x >= 0 ? 1 : -1;
       const p = fig.position;
       if (!(me.invuln > 0 && me.hurt > 0 && frame % 4 < 2)) drawFigure(p.x, p.y, playerLook(false), INK);
-      // no cursor: three faint dots show which way it aims (not with the word shooter)
-      const s = shoulder();
-      ctx.fillStyle = "rgba(200,0,0,.45)";
-      for (const d of WEAPONS[weapon].id === "words" ? [] : [40, 52, 64]) {
-        ctx.beginPath();
-        ctx.arc(s.x + a.x * d, s.y + a.y * d, d === 64 ? 2.2 : 1.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      // no cursor and no aim marks: the arm and what it holds show which way it aims
       let top = p.y - 34;
       if (me.hp < HP) {
         drawBar(p.x, top, 26, me.hp / HP, me.hp > 35 ? "#43a047" : "#e53935");

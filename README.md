@@ -11,7 +11,7 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
 - The bar is a small dot at the **bottom left**: hover it for **▶ Stick fight**, Stop, Reset, the weapons and the
   enemies' difficulty. While playing it shows one faint line: weapon, difficulty, health, enemies down.
 - The figure hangs where the mouse is; a click drops it there. There's **no cursor** while playing: the mouse is locked
-  to the page and its movement turns the aim (move it left, it aims left; three faint dots show which way).
+  to the page and its movement turns the aim (move it left, it aims left); the arm and what it holds show which way, there are no aim marks.
 - **A / D** (or ← →) run, **W / Space** (or ↑) jump, again in the air (a flip), and off walls; **S** (or ↓)
   drops through the line the figure stands on, and falls faster.
 - Text and tall images are platforms you land on from above: you run and jump through them from the side and from
@@ -19,9 +19,8 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
   of tall images are walls to jump off. Loose pieces are kicked out of the way.
 - Weapons, **1–6** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight), the
   **word shooter**: type a word, **Enter** (or click) fires its letters one by one, only if it's a real English word
-  (they land on the page as loose letters), and **Punch**: bare hands, relaxed and smiling until a click jabs along
-  the aim. While the word shooter is out, letters type, so the figure moves with the arrows and Space, and there
-  are no aim dots. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches, **V** (or **Tab**) waves
+  (they land on the page as loose letters), and **Punch**: bare hands, hanging relaxed until a click jabs along
+  the aim. While the word shooter is out, letters type, so the figure moves with the arrows and Space. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches, **V** (or **Tab**) waves
   with whatever is in its hand.
 - Enemies: **+ / −** (or the bar) set the difficulty, Off (the start), Easy, Normal, Hard, Brutal, Insane. Above Off
   red stick figures drop in from the top of the screen, more and faster the harder it is; they run at the figure,
