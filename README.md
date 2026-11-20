@@ -18,8 +18,8 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
   figure gets stuck under the line above). Images and buttons are solid all round. Loose pieces are kicked out of the
   way.
 - **Big pictures** (both sides over about 50 px, one over 70) never move: shots, kicks and grenades don't knock them
-  loose, and fire only darkens them; the burnt hole goes round them, they stay hanging over the circuit board with
-  their shadow on it, and stay solid. Small ones (icons, flags) fly and burn away like words.
+  loose, and fire burns through them like through the page (the hole and the board show over them) while they stay
+  solid and slowly brown. Small ones (icons, flags) fly and burn away like words.
 - Weapons, **1–6** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight), the
   **word shooter**: type a word, **Enter** (or click) fires its letters one by one, only if it's a real English word
   (they land on the page as loose letters), and **Punch**: bare hands, hanging relaxed until a click jabs along

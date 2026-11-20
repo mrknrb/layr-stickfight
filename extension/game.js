@@ -1341,7 +1341,7 @@
 
   /**
    * The paper burnt through here: what's on it turns to ash and is gone (the figure falls through the hole). A big
-   * picture stays, dark and solid, over the hole.
+   * picture looks burnt through too (the hole is drawn over it), but it stays solid and browns slowly.
    */
   function burnAt(x, y, r) {
     if (!engine) return;
@@ -1382,12 +1382,6 @@
 
   if (Holes) {
     Holes.hooks({ scorch: scorchAt, burn: burnAt });
-    // the holes leave the big pictures standing
-    Holes.keep(() => {
-      const out = [];
-      for (const t of things) if (t.fixed && !t.dead) out.push(t.rect);
-      return out;
-    });
   }
 
   function burst(x, y, n, color, speed) {
