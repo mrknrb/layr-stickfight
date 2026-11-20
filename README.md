@@ -17,10 +17,12 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
 - Text and tall images are platforms you land on from above: you run and jump through them from the side and from
   below (else the figure gets stuck under the line above). Small images and buttons are solid all round; the sides
   of tall images are walls to jump off. Loose pieces are kicked out of the way.
-- Weapons, **1–5** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight) and the
+- Weapons, **1–6** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight), the
   **word shooter**: type a word, **Enter** (or click) fires its letters one by one, only if it's a real English word
-  (they land on the page as loose letters). While it's out, letters type, so the figure moves with the arrows and
-  Space. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches.
+  (they land on the page as loose letters), and **Punch**: bare hands, relaxed and smiling until a click jabs along
+  the aim. While the word shooter is out, letters type, so the figure moves with the arrows and Space, and there
+  are no aim dots. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches, **V** (or **Tab**) waves
+  with whatever is in its hand.
 - Enemies: **+ / −** (or the bar) set the difficulty, Off (the start), Easy, Normal, Hard, Brutal, Insane. Above Off
   red stick figures drop in from the top of the screen, more and faster the harder it is; they run at the figure,
   jump and drop after it and punch, from Normal on some shoot. Bullets, letters, kicks, flames and grenades take

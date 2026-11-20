@@ -130,6 +130,36 @@ try {
   const cursor = await page.evaluate(() => getComputedStyle(document.querySelector("#p1")).cursor);
   assert.ok(/^url\("data:image\/svg\+xml.*none$/.test(cursor), `no cursor while playing: ${cursor}`);
 
+  // punch mode: friendly with empty hands, V waves, a click punches along the aim
+  await page.keyboard.press("6");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.sfWeapon), "hands");
+  await page.waitForTimeout(300);
+  const [hx, hy] = await figure();
+  const hsy = await page.evaluate(() => scrollY);
+  await page.screenshot({ path: path.join(OUT, "6b-friendly.png"), clip: { x: hx - 40, y: hy - hsy - 50, width: 80, height: 90 } });
+  await page.keyboard.press("v");
+  await page.waitForTimeout(200);
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.sfWave), "1", "V waves");
+  const [wx, wy] = await figure();
+  const sy = await page.evaluate(() => scrollY);
+  await page.screenshot({ path: path.join(OUT, "6c-wave.png"), clip: { x: wx - 40, y: wy - sy - 50, width: 80, height: 90 } });
+  const [px, py] = await figure();
+  await aimAt(px + 60, py + 50); // down into the line it stands on
+  const beforePunch = await pieces();
+  for (let i = 0; i < 4 && (await pieces()) === beforePunch; i++) {
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(350);
+  }
+  assert.ok(await pieces() > beforePunch, "a punch knocks words loose");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.sfWave), "0", "punching ends the wave");
+  await page.keyboard.press("1");
+  await page.keyboard.press("v"); // waves the pistol
+  await page.waitForTimeout(250);
+  const [gx, gy] = await figure();
+  const gsy = await page.evaluate(() => scrollY);
+  await page.screenshot({ path: path.join(OUT, "6d-wave-gun.png"), clip: { x: gx - 40, y: gy - gsy - 50, width: 80, height: 90 } });
+
   // shoot at the first paragraph: its words come loose and their places stay empty
   const target = await docPoint("#p1", 0.6, 0.1);
   await aimAt(target.x, target.y);
@@ -272,6 +302,10 @@ try {
   await until("the three letters land as loose pieces", async () =>
     (await page.locator(".sf-piece.sf-letter").count()) === 3, 4000);
   await page.screenshot({ path: path.join(OUT, "6-words.png") });
+  await page.keyboard.press("Tab"); // waves with the megaphone (V would type a letter here)
+  await until("Tab waves", async () => (await data("sfWave")) === "1", 1000);
+
+
   await page.keyboard.press("2");
   assert.equal(await data("sfWeapon"), "rifle");
 

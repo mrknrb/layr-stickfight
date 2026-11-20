@@ -66,6 +66,7 @@
       push: 1.4, shake: 6 },
     { id: "flamer", name: "Flamethrower", every: 2 },
     { id: "words", name: "Word shooter", every: 0 },
+    { id: "hands", name: "Punch", every: 13 }, // bare hands: friendly until it punches
   ];
 
   // ---------- state ----------
@@ -79,7 +80,10 @@
   const hidden = []; // {el, prev}: originals hidden behind their flying copies, or burnt away
   const charred = []; // elements the fire has charred (class sf-burning)
   let fig = null; // the figure's body
-  const anim = { facing: 1, run: 0, flip: 0, flipDir: 1, melee: 0, meleeKind: "punch", recoil: 0, flash: 0 };
+  const anim = {
+    facing: 1, run: 0, flip: 0, flipDir: 1, melee: 0, meleeKind: "punch", recoil: 0, flash: 0, wave: 0, jabArm: false,
+  };
+  const WAVE = 100; // steps a wave lasts
   const ctl = {
     grounded: false, onText: false, drop: 0, coyote: 0, jumps: 1, wall: 0, fireWait: 0, nadeWait: 0, lastJump: false,
   };
@@ -222,10 +226,10 @@
   for (const b of ui.weapons) b.addEventListener("click", () => selectWeapon(Number(b.dataset.weapon)));
 
   const HINT_PLACE = "Click to drop the stick figure";
-  const HINT_PLAY = "Move the mouse to aim (no cursor) · click fire · right click grenade · 1–5 or wheel: weapon · " +
-    "+ / − enemies · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
+  const HINT_PLAY = "Move the mouse to aim (no cursor) · click fire · right click grenade · 1–6 or wheel: weapon · " +
+    "+ / − enemies · V or Tab wave · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
   const HINT_WORDS = "Word shooter: type a word, Enter (or click) fires its letters, only real English words. " +
-    "Letters type now: move with the arrows and Space.";
+    "Letters type now: move with the arrows and Space, Tab waves.";
 
   function hud() {
     const W = WEAPONS[weapon];
@@ -1027,6 +1031,20 @@
     nades.push({ body, fuse: FUSE });
   }
 
+/** Punch mode: a jab along the aim, the hands taking turns. */
+  function punch() {
+    anim.melee = 1;
+    anim.meleeKind = "jab";
+    anim.meleeHit = false;
+    anim.jabArm = !anim.jabArm;
+    anim.wave = 0;
+  }
+
+  /** V: the figure waves, with whatever it holds (or its bare hand). */
+  function wave() {
+    anim.wave = WAVE;
+  }
+
   function melee() {
     if (anim.melee > 0) return;
     anim.melee = 1;
@@ -1037,6 +1055,19 @@
   function meleeStrike() {
     const a = aimDir();
     const p = fig.position;
+    if (anim.meleeKind === "jab") {
+      const s = shoulder();
+      const hx = s.x + a.x * 22;
+      const hy = s.y + a.y * 22;
+      const n = hitAt(hx, hy, MELEE_RADIUS, { x: a.x * 1.4, y: a.y * 1.4 - 0.3 }, 0);
+      const e = enemyAt(hx, hy, MELEE_RADIUS * 0.6);
+      if (e) hurtEnemy(e, 2, { x: a.x * 10, y: a.y * 6 - 4 });
+      if (n || e) {
+        shake = Math.max(shake, 4);
+        burst(hx, hy, 6, "#666", 3);
+      }
+      return;
+    }
     const dir = Math.abs(a.y) < 0.5 ? { x: anim.facing, y: a.y * 0.5 } : a;
     const reach = anim.meleeKind === "kick" ? 22 : 18;
     const hx = p.x + dir.x * reach;
@@ -1345,8 +1376,10 @@
       control(list);
       wade();
       if ((mouse.down || mouse.clicked) && ctl.fireWait <= 0 && W.every) {
-        if (W.id === "flamer") flame();
+        if (W.id === "hands") punch();
+        else if (W.id === "flamer") flame();
         else fire(W);
+        anim.wave = 0;
         ctl.fireWait = W.every;
         mouse.clicked = false;
       }
@@ -1403,6 +1436,7 @@
     if (me.invuln > 0) me.invuln--;
     if (me.hurt > 0) me.hurt--;
     if (anim.flip > 0) anim.flip = Math.max(0, anim.flip - 1 / 26);
+    if (anim.wave > 0) anim.wave--;
     if (fig && ctl.grounded) anim.run += Math.abs(fig.velocity.x) * 0.075;
     anim.recoil *= 0.75;
     if (anim.flash > 0) anim.flash--;
@@ -1476,7 +1510,9 @@
       facing: anim.facing, lean: lean(), air: falling || !ctl.grounded, wall: falling ? 0 : ctl.wall,
       vx: fig ? fig.velocity.x : 0, vy: fig ? fig.velocity.y : 0, run: anim.run, melee: anim.melee,
       meleeKind: anim.meleeKind, aim: aimDir(), recoil: anim.recoil, flip: anim.flip, flipDir: anim.flipDir,
-      weapon: WEAPONS[weapon].id, flash: anim.flash, armsUp: false,
+      weapon: WEAPONS[weapon].id, flash: anim.flash, armsUp: false, wave: anim.wave, jabArm: anim.jabArm,
+      // a smile while waving, and in punch mode while it isn't punching
+      friendly: anim.wave > 0 || (WEAPONS[weapon].id === "hands" && !(anim.melee > 0)),
     };
   }
 
@@ -1488,7 +1524,7 @@
     return {
       facing: e.facing, lean: L.clamp(v.x * 0.7, -4, 4), air: !e.grounded, wall: 0, vx: v.x, vy: v.y, run: e.run,
       melee: e.melee, meleeKind: "punch", aim, recoil: e.recoil, flip: e.flip, flipDir: e.facing,
-      weapon: e.shooter ? "pistol" : "fists", flash: e.flash, armsUp: !e.grounded && v.y > 3,
+      weapon: e.shooter ? "pistol" : "guard", flash: e.flash, armsUp: !e.grounded && v.y > 3,
     };
   }
 
@@ -1533,20 +1569,38 @@
     const back = o.recoil * 4;
     let gun = { x: sh.x + a.x * (14 - back), y: sh.y + a.y * (14 - back) };
     let off = { x: sh.x + a.x * 10 - a.y * 2 * f, y: sh.y + a.y * 10 + a.x * 2 * f };
-    if (o.melee > 0 && o.meleeKind === "punch") {
+    // bare hands hang relaxed, swinging a little as it runs
+    const swing = !o.air && Math.abs(o.vx) > 0.4 ? Math.sin(o.run) * 4 : 0;
+    const relaxedA = { x: sh.x + f * 8 + swing, y: sh.y + 12 };
+    const relaxedB = { x: sh.x - f * 7 - swing, y: sh.y + 12 };
+    if (o.melee > 0 && o.meleeKind === "jab") {
+      // one fist shoots out along the aim, the other guards the chin
+      const t = Math.sin((1 - o.melee) * Math.PI);
+      const fist = { x: sh.x + a.x * (5 + 12 * t), y: sh.y + a.y * (5 + 12 * t) };
+      const guard = { x: sh.x + f * 6, y: sh.y - 2 };
+      gun = o.jabArm ? fist : guard;
+      off = o.jabArm ? guard : fist;
+    } else if (o.melee > 0 && o.meleeKind === "punch") {
       const t = Math.sin((1 - o.melee) * Math.PI);
       off = { x: sh.x + f * (6 + 9 * t), y: sh.y + a.y * 6 * t };
       gun = { x: sh.x - f * 4 + a.x * 6, y: sh.y + 6 };
+    } else if (o.wave > 0) {
+      // the hand (and what it holds) up over the head, waving side to side
+      gun = { x: sh.x + f * 5 + Math.sin(o.wave * 0.32) * 6, y: sh.y - 14 };
+      if (o.weapon === "hands") off = relaxedB;
     } else if (o.armsUp) {
       gun = { x: sh.x - 6, y: sh.y - 13 };
       off = { x: sh.x + 6, y: sh.y - 13 };
-    } else if (o.weapon === "fists") {
+    } else if (o.weapon === "hands") {
+      gun = relaxedA;
+      off = relaxedB;
+    } else if (o.weapon === "guard") {
       gun = { x: sh.x + f * 8, y: sh.y + 2 };
       off = { x: sh.x + f * 12, y: sh.y - 3 };
     }
-    const elbowG = L.ik(sh.x, sh.y, gun.x, gun.y, 7.5, 7.5, a.x >= 0 ? 1 : -1);
+    const elbowG = L.ik(sh.x, sh.y, gun.x, gun.y, 7.5, 7.5, o.wave > 0 ? -f : a.x >= 0 ? 1 : -1);
     const elbowO = L.ik(sh.x, sh.y, off.x, off.y, 7.5, 7.5, a.x >= 0 ? 1 : -1);
-    return { head, neck, hip, kneeA, kneeB, sh, elbowG, elbowO, a };
+    return { head, neck, hip, kneeA, kneeB, sh, elbowG, elbowO, a, f };
   }
 
   /** What the figure holds, drawn along the aim at its hand (the barrel's end at x = its length). */
@@ -1641,14 +1695,41 @@
     ctx.arc(b.head.x, b.head.y, 5.5, 0, Math.PI * 2);
     ctx.fillStyle = ink;
     ctx.fill();
-    if (!o.armsUp) {
+    if (o.friendly) {
+      // two eyes and a smile, looking the way it faces
+      const hx = b.head.x + b.f * 1.2;
+      const hy = b.head.y;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(hx - 1.9, hy - 1.6, 0.95, 0, Math.PI * 2);
+      ctx.arc(hx + 1.9, hy - 1.6, 0.95, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(hx, hy + 0.2, 2.6, Math.PI * 0.18, Math.PI * 0.82);
+      ctx.stroke();
+    }
+    if (o.melee > 0 && o.meleeKind === "jab") {
+      const h = o.jabArm ? b.elbowG : b.elbowO;
+      ctx.fillStyle = ink;
+      ctx.beginPath();
+      ctx.arc(h.fx, h.fy, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (!o.armsUp && o.weapon !== "hands") {
       const g = b.elbowG;
       ctx.save();
       ctx.translate(g.fx, g.fy);
-      ctx.rotate(b.a.angle);
-      if (b.a.x < 0) ctx.scale(1, -1);
+      if (o.wave > 0) {
+        // held up and waved: pointing up, tilting with the hand
+        ctx.rotate(-Math.PI / 2 + b.f * 0.3 + Math.sin(o.wave * 0.32) * 0.45);
+        if (b.f < 0) ctx.scale(1, -1);
+      } else {
+        ctx.rotate(b.a.angle);
+        if (b.a.x < 0) ctx.scale(1, -1);
+      }
       ctx.fillStyle = INK;
-      drawItem(o.weapon, o.flash);
+      drawItem(o.weapon, o.wave > 0 ? 0 : o.flash);
       ctx.restore();
     }
     ctx.restore();
@@ -1825,10 +1906,10 @@
       anim.facing = a.x >= 0 ? 1 : -1;
       const p = fig.position;
       if (!(me.invuln > 0 && me.hurt > 0 && frame % 4 < 2)) drawFigure(p.x, p.y, playerLook(false), INK);
-      // no cursor: three faint dots show which way it aims
+      // no cursor: three faint dots show which way it aims (not with the word shooter)
       const s = shoulder();
       ctx.fillStyle = "rgba(200,0,0,.45)";
-      for (const d of [40, 52, 64]) {
+      for (const d of WEAPONS[weapon].id === "words" ? [] : [40, 52, 64]) {
         ctx.beginPath();
         ctx.arc(s.x + a.x * d, s.y + a.y * d, d === 64 ? 2.2 : 1.6, 0, Math.PI * 2);
         ctx.fill();
@@ -1859,6 +1940,7 @@
       html.dataset.sfPieces = String(pieces.length);
       if (frame % 6 === 0) {
         if (fig) html.dataset.sfFigure = `${Math.round(fig.position.x)},${Math.round(fig.position.y)}`;
+        html.dataset.sfWave = anim.wave > 0 ? "1" : "0";
         html.dataset.sfAim = String(Math.round((aimDir().angle * 180) / Math.PI));
         html.dataset.sfEnemies = String(enemies.length);
         html.dataset.sfKills = String(kills);
@@ -1973,6 +2055,7 @@
     if (act === "stop") stop();
     else if (mode !== "playing") return;
     else if (act === "melee" && fig) melee();
+    else if (act === "wave" && fig) wave();
     else if (act === "grenade" && fig && ctl.nadeWait <= 0) {
       throwNade();
       ctl.nadeWait = 30;

@@ -90,6 +90,9 @@
         return "grenade";
       case "KeyR":
         return "respawn";
+      case "KeyV":
+      case "Tab":
+        return "wave";
       case "Escape":
         return "stop";
       case "Digit1":
@@ -97,11 +100,13 @@
       case "Digit3":
       case "Digit4":
       case "Digit5":
+      case "Digit6":
       case "Numpad1":
       case "Numpad2":
       case "Numpad3":
       case "Numpad4":
       case "Numpad5":
+      case "Numpad6":
         return `weapon${code.slice(-1)}`;
       case "Equal":
       case "NumpadAdd":
