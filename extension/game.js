@@ -45,7 +45,9 @@
   const LEDGE = 8; // px: running along a line, the figure steps onto a box this much higher (a [1] reference)
   const DROP = 12; // steps the figure falls through text after S
   const MELEE_RADIUS = 20;
-  const PICTURE_DARKENS = 4000; // ms of fire at a big picture before it starts going dark
+  // a big picture browns while the fire burns at it: from this much burning on, slowly, to fully dark brown
+  const BROWN_FROM = 15; // burn hook calls (about 10 a second for each burning spot touching it)
+  const BROWN_FULL = 300;
   const AIM_R = 120; // px of mouse movement that turn the aim right round
   const HP = 100;
   const ENEMY_INK = "#b3261e";
@@ -79,6 +81,7 @@
   let pieces = []; // {body, wrap, ox, oy, synced}
   const hidden = []; // {el, prev}: originals hidden behind their flying copies, or burnt away
   const charred = []; // elements the fire has charred (class sf-burning)
+  const browned = new Map(); // big pictures browning in the fire → their own inline filter, for Reset
   let fig = null; // the figure's body
   const anim = {
     facing: 1, run: 0, flip: 0, flipDir: 1, melee: 0, meleeKind: "punch", recoil: 0, flash: 0, wave: 0, jabArm: false,
@@ -1345,13 +1348,8 @@
     let n = 0;
     for (const t of thingsIn(x, y, r)) {
       if (t.fixed) {
-        // the soot is drawn over it at once; it goes dark itself only after the fire has burnt at it for a while
-        t.hotSince = t.hotSince || performance.now();
-        if (!t.charred && performance.now() - t.hotSince > PICTURE_DARKENS) {
-          t.charred = true;
-          t.el.classList.add("sf-burning");
-          charred.push(t.el);
-        }
+        // the soot is drawn over it at once; the picture itself browns slowly, the longer the fire burns at it
+        brown(t);
         continue;
       }
       if (!centreIn(t, x, y, r)) continue;
@@ -1366,6 +1364,20 @@
       wrecked = true;
     }
     showUi();
+  }
+
+  /** One more moment of fire at a big picture: a little browner and darker (sepia, then dim), up to dark brown. */
+  function brown(t) {
+    t.burning = (t.burning || 0) + 1;
+    const k = L.clamp((t.burning - BROWN_FROM) / (BROWN_FULL - BROWN_FROM), 0, 1);
+    if (k <= 0 || k - (t.brown || 0) < 0.01) return;
+    t.brown = k;
+    const el = t.el;
+    if (!browned.has(el)) browned.set(el, { filter: el.style.filter, transition: el.style.transition });
+    el.style.transition = "filter .8s linear";
+    el.style.filter = `sepia(${(k * 0.95).toFixed(3)}) saturate(${(1 + k * 0.7).toFixed(3)}) ` +
+      `brightness(${(1 - k * 0.6).toFixed(3)}) contrast(${(1 + k * 0.15).toFixed(3)})`;
+    wrecked = true;
   }
 
   if (Holes) {
@@ -2147,6 +2159,11 @@
     stop();
     for (const p of pieces) p.wrap.remove();
     if (Holes) Holes.clear();
+    for (const [el, prev] of browned) {
+      el.style.filter = prev.filter;
+      el.style.transition = prev.transition;
+    }
+    browned.clear();
     for (const el of charred.splice(0)) {
       el.classList.remove("sf-burning");
       if (!el.classList.length) el.removeAttribute("class");
