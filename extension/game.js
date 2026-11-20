@@ -45,6 +45,7 @@
   const LEDGE = 8; // px: running along a line, the figure steps onto a box this much higher (a [1] reference)
   const DROP = 12; // steps the figure falls through text after S
   const MELEE_RADIUS = 20;
+  const PICTURE_DARKENS = 4000; // ms of fire at a big picture before it starts going dark
   const AIM_R = 120; // px of mouse movement that turn the aim right round
   const HP = 100;
   const ENEMY_INK = "#b3261e";
@@ -1324,11 +1325,11 @@
 
   const centreIn = (t, x, y, r) => Math.hypot(t.rect.x + t.rect.w / 2 - x, t.rect.y + t.rect.h / 2 - y) < r;
 
-  /** Soot reached here: the words glow and go black, images go dark (a big picture as soon as the soot touches it). */
+  /** Soot reached here: the words glow and go black, small images go dark (big pictures only later, see burnAt). */
   function scorchAt(x, y, r) {
     if (!engine) return;
     for (const t of thingsIn(x, y, r)) {
-      if (t.charred || (!t.fixed && !centreIn(t, x, y, r))) continue;
+      if (t.charred || t.fixed || !centreIn(t, x, y, r)) continue;
       t.charred = true;
       t.el.classList.add("sf-burning");
       charred.push(t.el);
@@ -1344,7 +1345,9 @@
     let n = 0;
     for (const t of thingsIn(x, y, r)) {
       if (t.fixed) {
-        if (!t.charred) {
+        // the soot is drawn over it at once; it goes dark itself only after the fire has burnt at it for a while
+        t.hotSince = t.hotSince || performance.now();
+        if (!t.charred && performance.now() - t.hotSince > PICTURE_DARKENS) {
           t.charred = true;
           t.el.classList.add("sf-burning");
           charred.push(t.el);

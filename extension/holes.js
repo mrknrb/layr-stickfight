@@ -454,6 +454,15 @@
     }
     ctx.globalAlpha = 1;
     if (holes.length) {
+      // the big pictures stay: what follows (rims, board, shadows) leaves them out, the soot above stays over them
+      const keep = kept().filter((k) => k.x < vx1 && k.x + k.w > vx0 && k.y < vy1 && k.y + k.h > vy0);
+      ctx.save();
+      if (keep.length) {
+        ctx.beginPath();
+        ctx.rect(vx0, vy0, vx1 - vx0, vy1 - vy0);
+        for (const k of keep) ctx.rect(k.x, k.y, k.w, k.h);
+        ctx.clip("evenodd");
+      }
       // 2. the rims: a charred band, the glowing edge where it still burns (the board covers their inner half, and
       // all of a rim that lies inside another hole: touching holes are one)
       ctx.lineJoin = "round";
@@ -536,8 +545,7 @@
         ctx.drawImage(off2, 0, 0, ow, oh, x0, y0, ow / q, oh / q);
         ctx.globalAlpha = 1;
       }
-      // 5. the big pictures stay over the hole: their shadow on the board, then they're cut out (the page shows)
-      const keep = kept().filter((k) => k.x < x1 && k.x + k.w > x0 && k.y < y1 && k.y + k.h > y0);
+      // 5. the big pictures' shadow on the board (the pictures themselves are clipped out)
       if (keep.length) {
         ctx.filter = "blur(4px)";
         ctx.fillStyle = "rgba(0,0,0,.6)";
@@ -545,7 +553,7 @@
         ctx.filter = "none";
       }
       ctx.restore();
-      for (const k of keep) ctx.clearRect(k.x - 0.5, k.y - 0.5, k.w + 1, k.h + 1);
+      ctx.restore();
     }
 
   }
