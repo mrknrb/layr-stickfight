@@ -1287,7 +1287,8 @@
 
   function stepEnemyShots() {
     if (!enemyShots.length) return;
-    const list = figureSolids();
+    // like the player's bullets: stopped by words, images and loose pieces, and knocking them loose
+    const list = solids();
     for (const s of enemyShots) {
       for (let k = 0; k < 3 && s.left > 0; k++) {
         s.x += s.vx / 3;
@@ -1296,9 +1297,19 @@
         if (fig && Bounds.contains(fig.bounds, { x: s.x, y: s.y })) {
           hurtPlayer(L.level(level).dmg * 0.8, Math.sign(s.vx) || 1);
           s.left = 0;
-        } else if (Query.point(list, { x: s.x, y: s.y }).length) {
-          burst(s.x, s.y, 3, "#a00", 2);
-          s.left = 0;
+          break;
+        }
+        const hit = Query.point(list, { x: s.x, y: s.y }).find((h) => !(h.sfThing && h.sfThing.dead));
+        if (!hit) continue;
+        s.left = 0;
+        html.dataset.sfShotsStopped = String(Number(html.dataset.sfShotsStopped || 0) + 1);
+        burst(s.x, s.y, 4, "#555", 3);
+        burst(s.x, s.y, 2, "#e53935", 3);
+        const d = Math.hypot(s.vx, s.vy) || 1;
+        if (hit.sfThing) hitAt(s.x, s.y, 18, { x: (s.vx / d) * 0.8, y: (s.vy / d) * 0.8 }, 0);
+        else if (hit.sfPiece) {
+          Sleeping.set(hit, false);
+          Body.setVelocity(hit, { x: hit.velocity.x + (s.vx / d) * 4, y: hit.velocity.y + (s.vy / d) * 4 - 1 });
         }
       }
     }

@@ -329,6 +329,11 @@ try {
     return Number(await data("sfKills")) >= 1;
   }, 15000);
   await page.screenshot({ path: path.join(OUT, "8-enemy-down.png") });
+  // at Insane most of them shoot: their shots stop at the page (words, images) like the player's
+  for (let i = 0; i < 3; i++) await page.keyboard.press("Equal");
+  assert.equal(await data("sfLevel"), "5");
+  await until("an enemy shot is stopped by the page", async () => Number((await data("sfShotsStopped")) || 0) >= 1, 15000);
+  for (let i = 0; i < 3; i++) await page.keyboard.press("Minus");
   await page.keyboard.press("Minus");
   await page.keyboard.press("Minus");
   assert.equal(await data("sfLevel"), "0");
