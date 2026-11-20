@@ -59,6 +59,18 @@
   /** Elements whose content is never a thing. */
   const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "TITLE", "META", "LINK", "IFRAME"]);
 
+/** Pictures (not buttons or fields). */
+  const PICTURE_TAGS = new Set(["IMG", "SVG", "VIDEO", "CANVAS", "PICTURE"]);
+
+  /**
+   * A big picture stays where it is: nothing knocks it loose, fire only darkens it, and it's solid all round. Smaller
+   * ones (icons, flags, the little pictures in the text) fly and burn like words.
+   */
+  function bigPicture(tag, rect) {
+    if (!PICTURE_TAGS.has(String(tag).toUpperCase()) || !rect) return false;
+    return Math.min(rect.w, rect.h) > 48 && Math.max(rect.w, rect.h) > 70;
+  }
+
   function isSolidTag(tag) {
     return SOLID_TAGS.has(String(tag).toUpperCase());
   }
@@ -272,6 +284,7 @@
     usableRect,
     isSolidTag,
     isSkippedTag,
+    bigPicture,
     keyAction,
     aim,
     ik,

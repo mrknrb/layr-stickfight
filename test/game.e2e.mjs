@@ -174,8 +174,55 @@ try {
   assert.ok(shotWords.length && shotWords.every((id) => id === "p1"), `the shots hit #p1 where it is: ${shotWords}`);
   await page.screenshot({ path: path.join(OUT, "3-shot.png") });
 
+  const until = async (what, fn, ms) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      if (await fn()) return;
+      assert.ok(Date.now() < end, what);
+      await page.waitForTimeout(150);
+    }
+  };
+
+  // the big picture: solid (the figure runs onto it, not through), shots don't move it, fire only darkens it
+  const picAt = () => page.evaluate(() => {
+    const el = document.querySelector("#pic");
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), shown: el.style.visibility !== "hidden" };
+  });
+  const picStart = await picAt();
+  await page.keyboard.press("r");
+  await page.waitForTimeout(700);
+  await page.keyboard.down("d");
+  await page.waitForTimeout(1300);
+  await page.keyboard.up("d");
+  await page.waitForTimeout(500);
+  const [onX, onY] = await figure();
+  const inPic = (x, y) => x > picStart.x + 2 && x < picStart.x + 238 && y > picStart.y + 2 && y < picStart.y + 158;
+  assert.ok(!inPic(onX, onY) && onX > picStart.x - 20, `the figure runs up to the picture, not into it (${onX},${onY} vs ${JSON.stringify(picStart)})`);
+  // shots at it: it doesn't move or come loose
+  await aimAt(picStart.x + 120, picStart.y + 80);
+  await page.mouse.down();
+  await page.waitForTimeout(400);
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  assert.deepEqual(await picAt(), picStart, "shots don't move the big picture");
+  assert.equal(await page.locator(".sf-piece img").count(), 0, "no flying copy of it");
+  await page.keyboard.press("4");
+  const corner = { x: picStart.x + 8, y: Math.min(Math.max(onY - 6, picStart.y + 8), picStart.y + 152) };
+  await aimAt(corner.x, corner.y);
+  await page.mouse.down();
+  await until("the flames darken the big picture", async () =>
+    page.evaluate(() => document.querySelector("#pic").classList.contains("sf-burning")), 4000);
+  await page.mouse.up();
+  await page.keyboard.press("1");
+  await page.waitForTimeout(3500); // the fire burns a hole there
+  assert.deepEqual(await picAt(), picStart, "the big picture stays where it was, not burnt away");
+  const [stillX, stillY] = await figure();
+  assert.ok(!inPic(stillX, stillY), `and the figure is still not inside it (${stillX},${stillY})`);
+  await page.screenshot({ path: path.join(OUT, "3b-picture.png") });
+
   // a grenade (right click) breaks more
-  const img = await docPoint("#pic", 0.5, 0.2);
+  const img = await docPoint("#p2", 0.4, 0.5);
   await aimAt(img.x, img.y);
   await page.mouse.down({ button: "right" });
   await page.mouse.up({ button: "right" });
@@ -187,6 +234,9 @@ try {
     canvas: getComputedStyle(document.querySelector("canvas.sf-fire")).display,
   }));
   assert.ok(holes.count >= 1 && holes.canvas === "block", `the grenade burns a hole: ${JSON.stringify(holes)}`);
+  // the big picture next to it stays where it is: not knocked loose, not burnt away, only darkened
+  assert.ok((await picAt()).shown, "the grenade doesn't knock the big picture loose");
+  assert.equal(await page.locator(".sf-piece img").count(), 0, "no flying copy of it");
   await page.screenshot({ path: path.join(OUT, "4-grenade.png") });
 
   // run, jump, kick
@@ -246,20 +296,13 @@ try {
   // the grenade's fire has spread on by now
   const spots = Number(await page.evaluate(() => document.documentElement.dataset.sfHoles));
   assert.ok(spots > 1, `the fire spreads (${spots} burnt spots)`);
+  assert.deepEqual(await picAt(), picStart, "the big picture is still there after the fire");
 
   const data = (key) => page.evaluate((key) => document.documentElement.dataset[key], key);
-  const until = async (what, fn, ms) => {
-    const end = Date.now() + ms;
-    for (;;) {
-      if (await fn()) return;
-      assert.ok(Date.now() < end, what);
-      await page.waitForTimeout(150);
-    }
-  };
 
   // weapons: 1–5 pick them; the shotgun knocks words loose, the flamethrower sets the page alight
   await page.evaluate(() => {
-    const r = document.querySelector("#p3").getBoundingClientRect();
+    const r = document.querySelector("#p6").getBoundingClientRect();
     scrollTo({ top: r.top + scrollY - innerHeight * 0.25 - 25, behavior: "instant" });
   });
   await page.keyboard.press("r");
@@ -267,8 +310,8 @@ try {
   await page.keyboard.press("3");
   assert.equal(await data("sfWeapon"), "shotgun");
   const beforeShotgun = await pieces();
-  const p4 = await docPoint("#p4", 0.5, 0.3);
-  await aimAt(p4.x, p4.y);
+  const [sgx, sgy] = await figure(); // on #p6, untouched so far
+  await aimAt(sgx - 200, sgy + 12);
   await page.mouse.down();
   await page.mouse.up();
   await page.waitForTimeout(300);
@@ -276,8 +319,8 @@ try {
   await page.keyboard.press("4");
   assert.equal(await data("sfWeapon"), "flamer");
   const beforeFlames = Number(await data("sfHoles"));
-  const p3 = await docPoint("#p3", 0.3, 0.5);
-  await aimAt(p3.x, p3.y);
+  const [flx, fly] = await figure();
+  await aimAt(flx + 70, fly + 30);
   await page.mouse.down();
   await page.waitForTimeout(1200);
   await page.mouse.up();

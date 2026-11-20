@@ -37,7 +37,6 @@
   const RUN = 4.6;
   const JUMP = 9.2;
   const STEP_UP = 24; // px: a ledge up to this high (a small image, a button) is walked onto
-  const TALL = 70; // px: a taller image is a one-way platform like text (a wall would trap the figure)
   const BLAST_RADIUS = 120;
   const HOLE_RADIUS = 62; // px: the hole a grenade burns through the page (the fire spreads on from it)
   const FUSE = 80; // steps
@@ -362,7 +361,7 @@
         if (L.isSolidTag(n.tagName)) {
           if (!pinned(n)) {
             const rect = toRect(n.getBoundingClientRect());
-            if (L.usableRect(rect, page)) out.push({ kind: "el", el: n, rect });
+            if (L.usableRect(rect, page)) out.push({ kind: "el", el: n, rect, fixed: L.bigPicture(n.tagName, rect) });
           }
           return NodeFilter.FILTER_REJECT; // its insides fly with it
         }
@@ -389,8 +388,9 @@
     return out;
   }
 
+  /** Text is a one-way platform; elements (big pictures, icons, buttons) are solid all round. */
   function oneWay(thing) {
-    return thing.kind !== "el" || thing.rect.h > TALL;
+    return thing.kind !== "el";
   }
 
   function addStatic(thing) {
@@ -591,7 +591,9 @@
    * pushes them away from the point (a grenade) with that strength.
    */
   function hitAt(px, py, radius, dir, blast) {
-    const touched = bandBodies.filter((b) => b.sfThing && L.rectTouchesCircle(b.sfThing.rect, px, py, radius));
+    // big pictures stay where they are (bullets still stop at them)
+    const touched = bandBodies.filter((b) => b.sfThing && !b.sfThing.fixed &&
+      L.rectTouchesCircle(b.sfThing.rect, px, py, radius));
     const loose = [];
     for (const b of touched) {
       const t = b.sfThing;
@@ -714,21 +716,6 @@
     Body.setVelocity(body, { x: body.velocity.x, y: 0 });
   }
 
-  /** Is the figure at the side edge of a tall image (dir 1: the image's left edge is at its right)? Wall jumps. */
-  function imageEdge(dir) {
-    const p = fig.position;
-    const side = p.x + (dir * FIG_W) / 2;
-    for (const b of bandBodies) {
-      const t = b.sfThing;
-      if (t.kind !== "el" || !oneWay(t) || t.dead) continue;
-      const r = t.rect;
-      if (p.y + 10 < r.y || p.y - 10 > r.y + r.h) continue;
-      const edge = dir > 0 ? r.x : r.x + r.w;
-      if (Math.abs(side - edge) <= 6) return true;
-    }
-    return false;
-  }
-
   function standingOnText(body, st) {
     if (st.drop > 0) return false;
     const feet = body.position.y + FIG_H / 2;
@@ -785,8 +772,8 @@
     if (keys.down && onText && !onSolid) ctl.drop = DROP; // down through the line
     ctl.onText = onText && ctl.drop === 0;
     const grounded = onSolid || ctl.onText;
-    const wallL = touching(p.x - FIG_W / 2 - 3, p.y - 10, p.x - FIG_W / 2, p.y + 10, list) || imageEdge(-1);
-    const wallR = touching(p.x + FIG_W / 2, p.y - 10, p.x + FIG_W / 2 + 3, p.y + 10, list) || imageEdge(1);
+    const wallL = touching(p.x - FIG_W / 2 - 3, p.y - 10, p.x - FIG_W / 2, p.y + 10, list);
+    const wallR = touching(p.x + FIG_W / 2, p.y - 10, p.x + FIG_W / 2 + 3, p.y + 10, list);
     ctl.grounded = grounded;
     ctl.wall = grounded ? 0 : wallR ? 1 : wallL ? -1 : 0;
     if (grounded) {
@@ -1337,22 +1324,33 @@
 
   const centreIn = (t, x, y, r) => Math.hypot(t.rect.x + t.rect.w / 2 - x, t.rect.y + t.rect.h / 2 - y) < r;
 
-  /** Soot reached here: the words glow and go black, images go dark. */
+  /** Soot reached here: the words glow and go black, images go dark (a big picture as soon as the soot touches it). */
   function scorchAt(x, y, r) {
     if (!engine) return;
     for (const t of thingsIn(x, y, r)) {
-      if (t.charred || !centreIn(t, x, y, r)) continue;
+      if (t.charred || (!t.fixed && !centreIn(t, x, y, r))) continue;
       t.charred = true;
       t.el.classList.add("sf-burning");
       charred.push(t.el);
     }
   }
 
-  /** The paper burnt through here: what's on it turns to ash and is gone (the figure falls through the hole). */
+  /**
+   * The paper burnt through here: what's on it turns to ash and is gone (the figure falls through the hole). A big
+   * picture stays, dark and solid, over the hole.
+   */
   function burnAt(x, y, r) {
     if (!engine) return;
     let n = 0;
     for (const t of thingsIn(x, y, r)) {
+      if (t.fixed) {
+        if (!t.charred) {
+          t.charred = true;
+          t.el.classList.add("sf-burning");
+          charred.push(t.el);
+        }
+        continue;
+      }
       if (!centreIn(t, x, y, r)) continue;
       t.dead = true;
       dropStatic(t);
@@ -1367,7 +1365,15 @@
     showUi();
   }
 
-  if (Holes) Holes.hooks({ scorch: scorchAt, burn: burnAt });
+  if (Holes) {
+    Holes.hooks({ scorch: scorchAt, burn: burnAt });
+    // the holes leave the big pictures standing
+    Holes.keep(() => {
+      const out = [];
+      for (const t of things) if (t.fixed && !t.dead) out.push(t.rect);
+      return out;
+    });
+  }
 
   function burst(x, y, n, color, speed) {
     for (let i = 0; i < n; i++) {

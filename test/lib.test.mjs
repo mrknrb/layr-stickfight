@@ -171,6 +171,14 @@ test("difficulty levels", () => {
   }
 });
 
+test("big pictures", () => {
+  assert.equal(L.bigPicture("IMG", { x: 0, y: 0, w: 240, h: 160 }), true);
+  assert.equal(L.bigPicture("svg", { x: 0, y: 0, w: 100, h: 60 }), true);
+  assert.equal(L.bigPicture("IMG", { x: 0, y: 0, w: 20, h: 20 }), false, "an icon");
+  assert.equal(L.bigPicture("IMG", { x: 0, y: 0, w: 300, h: 20 }), false, "a thin banner flies too");
+  assert.equal(L.bigPicture("BUTTON", { x: 0, y: 0, w: 200, h: 100 }), false, "not a picture");
+});
+
 test("weapon and word keys", () => {
   assert.equal(L.keyAction("Digit3"), "weapon3");
   assert.equal(L.keyAction("Numpad5"), "weapon5");

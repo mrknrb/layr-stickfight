@@ -14,9 +14,12 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
   to the page and its movement turns the aim (move it left, it aims left); the arm and what it holds show which way, there are no aim marks.
 - **A / D** (or ← →) run, **W / Space** (or ↑) jump, again in the air (a flip), and off walls; **S** (or ↓)
   drops through the line the figure stands on, and falls faster.
-- Text and tall images are platforms you land on from above: you run and jump through them from the side and from
-  below (else the figure gets stuck under the line above). Small images and buttons are solid all round; the sides
-  of tall images are walls to jump off. Loose pieces are kicked out of the way.
+- Text is a platform you land on from above: you run and jump through it from the side and from below (else the
+  figure gets stuck under the line above). Images and buttons are solid all round. Loose pieces are kicked out of the
+  way.
+- **Big pictures** (both sides over about 50 px, one over 70) never move: shots, kicks and grenades don't knock them
+  loose, and fire only darkens them; the burnt hole goes round them, they stay hanging over the circuit board with
+  their shadow on it, and stay solid. Small ones (icons, flags) fly and burn away like words.
 - Weapons, **1–6** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight), the
   **word shooter**: type a word, **Enter** (or click) fires its letters one by one, only if it's a real English word
   (they land on the page as loose letters), and **Punch**: bare hands, hanging relaxed until a click jabs along

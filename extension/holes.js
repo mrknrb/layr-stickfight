@@ -161,6 +161,7 @@
   let holesAt = -99; // the step the holes were last drawn at
   let view = ""; // scroll and size of the last drawing
   let hooks = { scorch: null, burn: null };
+  let kept = () => []; // the rectangles (page coordinates) the holes leave standing: the big pictures
 
   function boardPattern() {
     if (board || boardImg) return;
@@ -535,7 +536,16 @@
         ctx.drawImage(off2, 0, 0, ow, oh, x0, y0, ow / q, oh / q);
         ctx.globalAlpha = 1;
       }
+      // 5. the big pictures stay over the hole: their shadow on the board, then they're cut out (the page shows)
+      const keep = kept().filter((k) => k.x < x1 && k.x + k.w > x0 && k.y < y1 && k.y + k.h > y0);
+      if (keep.length) {
+        ctx.filter = "blur(4px)";
+        ctx.fillStyle = "rgba(0,0,0,.6)";
+        for (const k of keep) ctx.fillRect(k.x + 5, k.y + 8, k.w, k.h);
+        ctx.filter = "none";
+      }
       ctx.restore();
+      for (const k of keep) ctx.clearRect(k.x - 0.5, k.y - 0.5, k.w + 1, k.h + 1);
     }
 
   }
@@ -652,6 +662,10 @@
     /** `scorch(x, y, r)`: the paper within r is scorched; `burn(x, y, r)`: it burnt through within r. */
     hooks(h) {
       hooks = { ...hooks, ...h };
+    },
+    /** `fn()` gives the rectangles the holes leave standing (the big pictures). */
+    keep(fn) {
+      kept = fn;
     },
     count: () => sites.length,
     burning: () => sites.filter((s) => !s.st.done && s.st.heat > 0).length,
