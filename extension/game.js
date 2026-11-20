@@ -119,10 +119,12 @@
   html.dataset.stickfight = "idle";
 
   // ---------- page layers ----------
-  // no cursor while playing: an empty cursor image first (a web view whose host draws the cursor itself, as layr's
-  // panels do, may show an arrow for `none`, but it draws a custom cursor as given), `none` behind it
+  // no cursor while playing. layr's web panels draw the cursor themselves: for `none` (no cursor at all) they show the
+  // arrow, and a cursor image with no alpha in it they read by its mask (it can come out as a black square). So: a
+  // cursor image that is see-through but for one pixel at 2% (its alpha is used as it is, and nobody sees it), with
+  // `none` behind it for browsers without image cursors
   const NO_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E` +
-    `%3C/svg%3E") 0 0, none`;
+    `%3Crect width='2' height='2' fill-opacity='.02'/%3E%3C/svg%3E") 0 0, none`;
   const style = document.createElement("style");
   style.textContent = `
     html[data-stickfight="playing"], html[data-stickfight="playing"] *,
