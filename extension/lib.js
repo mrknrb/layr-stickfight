@@ -91,7 +91,6 @@
       case "KeyR":
         return "respawn";
       case "KeyV":
-      case "Tab":
         return "wave";
       case "Escape":
         return "stop";

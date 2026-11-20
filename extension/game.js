@@ -227,9 +227,9 @@
 
   const HINT_PLACE = "Click to drop the stick figure";
   const HINT_PLAY = "Move the mouse to aim (no cursor) · click fire · right click grenade · 1–6 or wheel: weapon · " +
-    "+ / − enemies · V or Tab wave · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
+    "+ / − enemies · V wave · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
   const HINT_WORDS = "Word shooter: type a word, Enter (or click) fires its letters, only real English words. " +
-    "Letters type now: move with the arrows and Space, Tab waves.";
+    "Letters type now: move with the arrows and Space; Enter on an empty word waves.";
 
   function hud() {
     const W = WEAPONS[weapon];
@@ -938,6 +938,10 @@
 
   /** Enter (or a click) with the word shooter: a real English word flies off letter by letter. */
   function fireWord() {
+    if (!word.text && !word.bad && !word.queue.length) {
+      wave(); // nothing typed: Enter waves the megaphone (V types a letter here)
+      return;
+    }
     const w = L.shootable(word.text);
     if (!w || word.bad || word.queue.length) return;
     if (!dict) {

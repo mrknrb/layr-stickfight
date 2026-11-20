@@ -20,7 +20,7 @@ its web panels on Windows; it also loads in Chrome as an unpacked extension. Onl
 - Weapons, **1–6** or the mouse wheel: pistol, machine gun, shotgun, flamethrower (sets the page alight), the
   **word shooter**: type a word, **Enter** (or click) fires its letters one by one, only if it's a real English word
   (they land on the page as loose letters), and **Punch**: bare hands, hanging relaxed until a click jabs along
-  the aim. While the word shooter is out, letters type, so the figure moves with the arrows and Space. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches, **V** (or **Tab**) waves
+  the aim. While the word shooter is out, letters type, so the figure moves with the arrows and Space. **Click** (hold) fires, **right click** (or **G**) throws a grenade, **F** (or **E**) kicks and punches, **V** waves (with the word shooter: **Enter** on an empty word)
   with whatever is in its hand.
 - Enemies: **+ / −** (or the bar) set the difficulty, Off (the start), Easy, Normal, Hard, Brutal, Insane. Above Off
   red stick figures drop in from the top of the screen, more and faster the harder it is; they run at the figure,

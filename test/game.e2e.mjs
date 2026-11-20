@@ -302,8 +302,11 @@ try {
   await until("the three letters land as loose pieces", async () =>
     (await page.locator(".sf-piece.sf-letter").count()) === 3, 4000);
   await page.screenshot({ path: path.join(OUT, "6-words.png") });
-  await page.keyboard.press("Tab"); // waves with the megaphone (V would type a letter here)
-  await until("Tab waves", async () => (await data("sfWave")) === "1", 1000);
+  await page.keyboard.press("Enter"); // nothing typed: waves the megaphone (V would type a letter here)
+  await until("Enter on an empty word waves", async () => (await data("sfWave")) === "1", 1000);
+  await page.keyboard.type("dog"); // and typing still works after the wave
+  await page.keyboard.press("Enter");
+  assert.equal(await data("sfWord"), "dog:ok");
 
 
   await page.keyboard.press("2");

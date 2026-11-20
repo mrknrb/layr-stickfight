@@ -179,6 +179,6 @@ test("weapon and word keys", () => {
   assert.equal(L.keyAction("Enter"), "enter");
   assert.equal(L.keyAction("Digit6"), "weapon6");
   assert.equal(L.keyAction("KeyV"), "wave");
-  assert.equal(L.keyAction("Tab"), "wave");
+  assert.equal(L.keyAction("Tab"), null, "Tab is left alone: in layr it moves the focus out of the page");
   assert.equal(L.keyAction("Digit9"), null);
 });
