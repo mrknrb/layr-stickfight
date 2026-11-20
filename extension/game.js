@@ -119,10 +119,14 @@
   html.dataset.stickfight = "idle";
 
   // ---------- page layers ----------
+  // no cursor while playing: an empty cursor image first (a web view whose host draws the cursor itself, as layr's
+  // panels do, may show an arrow for `none`, but it draws a custom cursor as given), `none` behind it
+  const NO_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E` +
+    `%3C/svg%3E") 0 0, none`;
   const style = document.createElement("style");
   style.textContent = `
     html[data-stickfight="playing"], html[data-stickfight="playing"] *,
-    html[data-stickfight="placing"], html[data-stickfight="placing"] * { cursor: none !important; }
+    html[data-stickfight="placing"], html[data-stickfight="placing"] * { cursor: ${NO_CURSOR} !important; }
     html[data-stickfight="playing"] *, html[data-stickfight="placing"] * { user-select: none !important; }
     .sf-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 2147483000;
       pointer-events: none; overflow: visible; }

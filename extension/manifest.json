@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stick fight",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A stick figure loose on Wikipedia: everything on the page is solid, and what it shoots flies apart.",
   "permissions": [
     "storage"

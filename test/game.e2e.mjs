@@ -128,7 +128,7 @@ try {
   await aimAt(fx0 + 300, fy0 - 6);
   assert.ok(Math.abs(await aimAngle()) < 8, `and right aims right (${await aimAngle()}°)`);
   const cursor = await page.evaluate(() => getComputedStyle(document.querySelector("#p1")).cursor);
-  assert.equal(cursor, "none", "no cursor while playing");
+  assert.ok(/^url\("data:image\/svg\+xml.*none$/.test(cursor), `no cursor while playing: ${cursor}`);
 
   // shoot at the first paragraph: its words come loose and their places stay empty
   const target = await docPoint("#p1", 0.6, 0.1);

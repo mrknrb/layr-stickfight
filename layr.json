@@ -1,7 +1,7 @@
 {
   "id": "stickfight",
   "name": "Stick fight",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A stick figure loose on Wikipedia pages: everything visible is solid, it fights enemies that drop in from the top with guns, a flamethrower and a word shooter, and what it hits flies apart.",
   "author": "layr",
   "layr": "^0.1",
