@@ -96,6 +96,12 @@
   let weapon = 0;
   let level = 0; // the difficulty: L.LEVELS
   let enemies = []; // {body, hp, max, speed, shooter, cool, drop, onText, grounded, ...}
+  let buddies = []; // allied stick figures: like enemies, but they follow the player and fight the enemies
+  let buddyCount = 0; // how many were ever spawned (picks their weapons in turn)
+  const BUDDY_INK = "#1565c0";
+  const MAX_BUDDIES = 6;
+  const BUDDY_HP = 40;
+  const BUDDY_KITS = ["pistol", "rifle", "shotgun", "flamer", "hands"];
   let enemyShots = []; // {x, y, vx, vy, left}
   let letters = []; // the word shooter's letters in flight: {ch, x, y, vx, vy, rot, spin, left}
   let flames = []; // the flamethrower's: {x, y, vx, vy, life, max, size, stuck}
@@ -208,6 +214,9 @@
         <div class="row"><span class="label">Enemies</span>
           <button data-act="easier" title="Fewer enemies (−)">&minus;</button><span class="lvl"></span>
           <button data-act="harder" title="More enemies (+): they drop in from the top">+</button></div>
+        <div class="row"><span class="label">Buddies</span>
+          <button data-act="buddy" title="A buddy drops in, one more each click (B)">+ Buddy</button>
+          <button data-act="unbuddy" title="Send the buddies away">Clear</button></div>
         <div class="hint"></div>
       </div>
     </div>`;
@@ -227,10 +236,15 @@
   shadow.querySelector('[data-act="easier"]').addEventListener("click", () => setLevel(level - 1));
   shadow.querySelector('[data-act="harder"]').addEventListener("click", () => setLevel(level + 1));
   for (const b of ui.weapons) b.addEventListener("click", () => selectWeapon(Number(b.dataset.weapon)));
+  shadow.querySelector('[data-act="buddy"]').addEventListener("click", () => spawnBuddy());
+  shadow.querySelector('[data-act="unbuddy"]').addEventListener("click", () => {
+    for (const b of buddies.slice()) removeBuddy(b, false);
+    showUi();
+  });
 
   const HINT_PLACE = "Click to drop the stick figure";
   const HINT_PLAY = "Move the mouse to aim (no cursor) · click fire · right click grenade · 1–6 or wheel: weapon · " +
-    "+ / − enemies · V wave · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
+    "+ / − enemies · B buddy · V wave · A/D run · W jump, twice, off walls · S drop · F kick · R respawn · Esc stop";
   const HINT_WORDS = "Word shooter: type a word, Enter (or click) fires its letters, only real English words. " +
     "Letters type now: move with the arrows and Space; Enter on an empty word waves.";
 
@@ -271,6 +285,7 @@
     html.dataset.sfWeapon = WEAPONS[weapon].id;
     html.dataset.sfLevel = String(level);
     html.dataset.sfEnemies = String(enemies.length);
+    html.dataset.sfBuddies = String(buddies.length);
     html.dataset.sfKills = String(kills);
     html.dataset.sfHp = String(Math.ceil(me.hp));
   }
@@ -1213,8 +1228,10 @@
     let want = 0;
     let vx = v.x;
     let vy = v.y;
-    if (fig) {
-      const t = fig.position;
+    const tg = pickTarget(p); // the player or the nearest buddy
+    e.tgt = tg ? tg.pos : null;
+    if (tg) {
+      const t = tg.pos;
       const dx = t.x - p.x;
       const dy = t.y - p.y;
       e.facing = dx >= 0 ? 1 : -1;
@@ -1234,7 +1251,8 @@
       if (Math.abs(dx) < 24 && Math.abs(dy) < 34 && e.cool <= 0) {
         e.melee = 1;
         e.cool = 55;
-        hurtPlayer(lv.dmg, e.facing);
+        if (tg.buddy) hurtBuddy(tg.buddy, lv.dmg * 1.5, e.facing);
+        else hurtPlayer(lv.dmg, e.facing);
       } else if (e.shooter && e.cool <= 0 && Math.hypot(dx, dy) < 700 && Math.random() < 0.03) {
         const s = { x: p.x, y: p.y - 6 };
         const a = L.aim(s.x, s.y, t.x, t.y - 6);
@@ -1294,6 +1312,12 @@
           s.left = 0;
           break;
         }
+        const bud = buddies.find((b) => Bounds.contains(b.body.bounds, { x: s.x, y: s.y }));
+        if (bud) {
+          hurtBuddy(bud, L.level(level).dmg * 1.2, Math.sign(s.vx) || 1);
+          s.left = 0;
+          break;
+        }
         const hit = Query.point(list, { x: s.x, y: s.y }).find((h) => !(h.sfThing && h.sfThing.dead));
         if (!hit) continue;
         s.left = 0;
@@ -1309,6 +1333,192 @@
       }
     }
     enemyShots = enemyShots.filter((s) => s.left > 0);
+  }
+
+  // ---------- buddies: allied figures that follow the player, fight like it, and draw the enemies' attention ----------
+  /** What the enemies go for: the player or the nearest buddy. */
+  function pickTarget(p) {
+    let best = fig ? { pos: fig.position, buddy: null, d: Math.hypot(fig.position.x - p.x, fig.position.y - p.y) } : null;
+    for (const b of buddies) {
+      const d = Math.hypot(b.body.position.x - p.x, b.body.position.y - p.y) * 0.85; // buddies stand in front
+      if (!best || d < best.d) best = { pos: b.body.position, buddy: b, d };
+    }
+    return best;
+  }
+
+  /** A buddy drops in from the top of the screen near the player, one more each time. */
+  function spawnBuddy() {
+    if (mode !== "playing" || !engine || buddies.length >= MAX_BUDDIES) return;
+    const cx = fig ? fig.position.x : scrollX + innerWidth / 2;
+    const x = L.clamp(cx + (Math.random() - 0.5) * 240, 20, Math.max(40, html.scrollWidth - 20));
+    const body = figureBody(x, scrollY - 40, CAT.figure);
+    Composite.add(engine.world, body);
+    Body.setVelocity(body, { x: 0, y: 2 });
+    buddies.push({
+      body, hp: BUDDY_HP, max: BUDDY_HP, weapon: BUDDY_KITS[buddyCount % BUDDY_KITS.length],
+      off: (Math.random() < 0.5 ? -1 : 1) * (40 + Math.random() * 90), speed: RUN * (0.85 + Math.random() * 0.2),
+      cool: 30, drop: 0, onText: false, grounded: false, jumpWait: 0, stuck: 0, facing: 1, run: 0, melee: 0, hurt: 0,
+      flip: 0, recoil: 0, flash: 0, prevFeet: 0, jab: false, aim: { x: 1, y: 0, angle: 0 },
+    });
+    buddyCount++;
+    hudFlash();
+    showUi();
+  }
+
+  function removeBuddy(b, smash) {
+    Composite.remove(engine.world, b.body);
+    buddies = buddies.filter((x) => x !== b);
+    if (smash) ragdoll(b.body.position, b.body.velocity, BUDDY_INK);
+  }
+
+  function hurtBuddy(b, dmg, dir) {
+    if (!buddies.includes(b)) return;
+    b.hp -= dmg;
+    b.hurt = 8;
+    Body.setVelocity(b.body, { x: b.body.velocity.x + dir * 4, y: b.body.velocity.y - 2 });
+    if (b.hp <= 0) {
+      removeBuddy(b, true);
+      showUi();
+    }
+  }
+
+  function nearestEnemy(p, reach) {
+    let best = null;
+    let bd = reach;
+    for (const e of enemies) {
+      const d = Math.hypot(e.body.position.x - p.x, e.body.position.y - p.y);
+      if (d < bd) {
+        bd = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
+  function buddyFire(b, foe) {
+    const p = b.body.position;
+    const s = { x: p.x + lean2(b.body) * 0.6, y: p.y - 6 };
+    const ta = L.aim(s.x, s.y, foe.body.position.x, foe.body.position.y - 6);
+    b.aim = ta;
+    const W = WEAPONS.find((w) => w.id === b.weapon);
+    const mx = s.x + ta.x * 25;
+    const my = s.y + ta.y * 25;
+    if (b.weapon === "flamer") {
+      for (let i = 0; i < 3; i++) {
+        const ang = ta.angle + (Math.random() - 0.5) * 0.22;
+        const v = 7 + Math.random() * 2.5;
+        flames.push({ x: mx + ta.x * 4, y: my + ta.y * 4, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v,
+          life: 26 + Math.random() * 8, max: 34, size: 3, stuck: false });
+      }
+      if (flames.length > 400) flames = flames.slice(flames.length - 400);
+      b.cool = 2;
+    } else {
+      for (let i = 0; i < W.shots; i++) {
+        const ang = ta.angle + (Math.random() - 0.5) * W.spread * 1.4;
+        bullets.push({
+          x: mx, y: my, vx: Math.cos(ang), vy: Math.sin(ang), left: W.range * (W.shots > 1 ? 0.7 + Math.random() * 0.3 : 1),
+          trail: [], speed: W.speed * (W.shots > 1 ? 0.8 + Math.random() * 0.4 : 1), radius: W.radius,
+          dmg: W.dmg, push: W.push, shake: 0,
+        });
+      }
+      b.cool = W.every + 10 + Math.random() * 20;
+      b.recoil = 1;
+      b.flash = 3;
+    }
+  }
+
+  const lean2 = (body) => L.clamp(body.velocity.x * 0.7, -4, 4);
+
+  function buddyThink(b, list) {
+    const body = b.body;
+    const p = body.position;
+    const v = body.velocity;
+    const feet = p.y + FIG_H / 2;
+    const rising = v.y < -0.5;
+    const onSolid = !rising && touching(p.x - FIG_W / 2 + 2, feet - 1, p.x + FIG_W / 2 - 2, feet + 3, list);
+    const onText = !rising && standingOnText(body, b);
+    b.onText = onText && b.drop === 0;
+    const grounded = onSolid || b.onText;
+    b.grounded = grounded;
+    if (b.drop > 0) b.drop--;
+    if (b.jumpWait > 0) b.jumpWait--;
+    if (b.cool > 0) b.cool--;
+    // lost far behind the player: catch up at once
+    if (fig && Math.hypot(fig.position.x - p.x, fig.position.y - p.y) > 1100) {
+      Body.setPosition(body, { x: fig.position.x + b.off, y: fig.position.y - 30 });
+      Body.setVelocity(body, { x: 0, y: 0 });
+      return;
+    }
+    const close = b.weapon === "hands" || b.weapon === "flamer" || b.weapon === "shotgun";
+    const range = close ? (b.weapon === "shotgun" ? 330 : 240) : 600;
+    const foe = nearestEnemy(p, range);
+    let goal = null; // where to stand
+    if (foe && close && (!fig || Math.hypot(foe.body.position.x - fig.position.x, foe.body.position.y - fig.position.y) < 320)) {
+      goal = { x: foe.body.position.x + (b.weapon === "shotgun" ? -Math.sign(foe.body.position.x - p.x) * 90 : 0),
+        y: foe.body.position.y };
+    } else if (fig) goal = { x: fig.position.x + b.off, y: fig.position.y };
+    let want = 0;
+    let vx = v.x;
+    let vy = v.y;
+    if (goal) {
+      const dx = goal.x - p.x;
+      const dy = goal.y - p.y;
+      if (Math.abs(dx) > 16) want = Math.sign(dx);
+      b.facing = foe ? (foe.body.position.x >= p.x ? 1 : -1) : want || b.facing;
+      if (grounded && b.jumpWait <= 0) {
+        if ((dy < -40 && Math.abs(dx) < 300 && Math.random() < 0.06) || b.stuck > 20) {
+          vy = -JUMP * (0.9 + Math.random() * 0.15);
+          b.jumpWait = 45;
+          b.stuck = 0;
+          if (Math.random() < 0.3) b.flip = 1;
+        } else if (dy > 60 && b.onText && Math.random() < 0.05) {
+          b.drop = DROP;
+          b.jumpWait = 20;
+        }
+      }
+    } else if (foe) b.facing = foe.body.position.x >= p.x ? 1 : -1;
+    if (foe) {
+      const fx = foe.body.position.x - p.x;
+      const fy = foe.body.position.y - p.y;
+      if (b.weapon === "hands") {
+        if (Math.abs(fx) < 26 && Math.abs(fy) < 34 && b.cool <= 0) {
+          b.melee = 1;
+          b.jab = !b.jab;
+          b.aim = L.aim(p.x, p.y, foe.body.position.x, foe.body.position.y);
+          hurtEnemy(foe, 2, { x: Math.sign(fx) * 9, y: -4 });
+          b.cool = 14;
+        }
+      } else if (b.cool <= 0 && Math.abs(fy) < 220 + Math.abs(fx) * 0.5) buddyFire(b, foe);
+      if (b.weapon !== "hands") b.aim = L.aim(p.x, p.y - 6, foe.body.position.x, foe.body.position.y - 6);
+    } else b.aim = { x: b.facing, y: 0.2, angle: b.facing > 0 ? 0.2 : Math.PI - 0.2 };
+    if (grounded) vx = L.lerp(vx, want * b.speed, 0.3);
+    else if (want) vx = L.lerp(vx, want * b.speed, 0.08);
+    if (want && grounded) stepUp(body, want, list);
+    if (want && grounded && Math.abs(v.x) < 0.4) b.stuck++;
+    else b.stuck = Math.max(0, b.stuck - 1);
+    Body.setVelocity(body, { x: vx, y: Math.min(vy, 22) });
+    if (grounded) b.run += Math.abs(vx) * 0.075;
+    if (b.melee > 0) b.melee = Math.max(0, b.melee - 1 / 14);
+    if (b.flip > 0) b.flip = Math.max(0, b.flip - 1 / 26);
+    if (b.hurt > 0) b.hurt--;
+    if (b.flash > 0) b.flash--;
+    b.recoil *= 0.75;
+  }
+
+  function stepBuddies(list) {
+    for (const b of buddies.slice()) {
+      b.prevFeet = b.body.position.y + FIG_H / 2;
+      buddyThink(b, list);
+    }
+  }
+
+  function buddyLook(b) {
+    const v = b.body.velocity;
+    return {
+      facing: b.facing, lean: L.clamp(v.x * 0.7, -4, 4), air: !b.grounded, wall: 0, vx: v.x, vy: v.y, run: b.run,
+      melee: b.melee, meleeKind: "jab", aim: b.aim, recoil: b.recoil, flip: b.flip, flipDir: b.facing,
+      weapon: b.weapon, flash: b.flash, armsUp: !b.grounded && v.y > 3, wave: 0, jabArm: b.jab,
+    };
   }
 
   // ---------- fire (holes.js tells where it scorches and where it burnt through) ----------
@@ -1423,6 +1633,7 @@
     }
     stepWord();
     stepEnemies(list);
+    stepBuddies(list);
     if (ctl.fireWait > 0) ctl.fireWait--;
     if (ctl.nadeWait > 0) ctl.nadeWait--;
     if (kindleWait > 0) kindleWait--;
@@ -1431,6 +1642,7 @@
     Engine.update(engine, STEP);
     landOnText(fig, ctl, prevFeet);
     for (const e of enemies) landOnText(e.body, e, e.prevFeet);
+    for (const b of buddies) landOnText(b.body, b, b.prevFeet);
     stepBullets();
     stepEnemyShots();
     stepLetters();
@@ -1461,6 +1673,14 @@
     for (const e of enemies.slice()) {
       const y = e.body.position.y;
       if (y > html.scrollHeight + 400 || y < scrollY - 2500 || y > scrollY + innerHeight + 2500) removeEnemy(e, false);
+    }
+    for (const b of buddies.slice()) {
+      if (b.body.position.y > html.scrollHeight + 400) {
+        if (fig) {
+          Body.setPosition(b.body, { x: fig.position.x + b.off, y: fig.position.y - 60 });
+          Body.setVelocity(b.body, { x: 0, y: 0 });
+        } else removeBuddy(b, false);
+      }
     }
     if (!fig && me.dead > 0 && --me.dead === 0) respawn();
     if (me.invuln > 0) me.invuln--;
@@ -1547,7 +1767,7 @@
   function enemyLook(e) {
     const v = e.body.velocity;
     const p = e.body.position;
-    const aim = e.shooter && fig ? L.aim(p.x, p.y - 6, fig.position.x, fig.position.y - 6) : { x: e.facing, y: 0.2,
+    const aim = e.shooter && e.tgt ? L.aim(p.x, p.y - 6, e.tgt.x, e.tgt.y - 6) : { x: e.facing, y: 0.2,
       angle: e.facing > 0 ? 0.2 : Math.PI - 0.2 };
     return {
       facing: e.facing, lean: L.clamp(v.x * 0.7, -4, 4), air: !e.grounded, wall: 0, vx: v.x, vy: v.y, run: e.run,
@@ -1898,6 +2118,11 @@
       }
       if (e.hp < e.max) drawBar(p.x, p.y - 32, 22, e.hp / e.max, "#e53935");
     }
+    for (const b of buddies) {
+      const p = b.body.position;
+      drawFigure(p.x, p.y, buddyLook(b), b.hurt > 0 && b.hurt % 4 < 2 ? "#82b1ff" : BUDDY_INK);
+      if (b.hp < b.max) drawBar(p.x, p.y - 32, 22, b.hp / b.max, "#1e88e5");
+    }
     if (flames.length) {
       ctx.globalCompositeOperation = "lighter";
       for (const f of flames) {
@@ -1949,6 +2174,7 @@
         html.dataset.sfWave = anim.wave > 0 ? "1" : "0";
         html.dataset.sfAim = String(Math.round((aimDir().angle * 180) / Math.PI));
         html.dataset.sfEnemies = String(enemies.length);
+        html.dataset.sfBuddies = String(buddies.length);
         html.dataset.sfKills = String(kills);
         html.dataset.sfHp = String(Math.ceil(me.hp));
         const foe = fig && enemies.length ? enemies.reduce((m, e) =>
@@ -2062,6 +2288,7 @@
     else if (mode !== "playing") return;
     else if (act === "melee" && fig) melee();
     else if (act === "wave" && fig) wave();
+    else if (act === "buddy") spawnBuddy();
     else if (act === "grenade" && fig && ctl.nadeWait <= 0) {
       throwNade();
       ctl.nadeWait = 30;
@@ -2133,6 +2360,8 @@
     fig = null;
     for (const n of nades) Composite.remove(engine.world, n.body);
     for (const e of enemies) Composite.remove(engine.world, e.body);
+    for (const b of buddies) Composite.remove(engine.world, b.body);
+    buddies = [];
     enemies = [];
     enemyShots = [];
     letters = [];
