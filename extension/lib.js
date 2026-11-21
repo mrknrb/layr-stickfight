@@ -104,6 +104,8 @@
         return "respawn";
       case "KeyV":
         return "wave";
+      case "KeyB":
+        return "buddy";
       case "Escape":
         return "stop";
       case "Digit1":
